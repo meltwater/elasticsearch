@@ -10,6 +10,7 @@
     <packaging>jar</packaging>
     <description>ElasticSearch - Open Source, Distributed, RESTful Search Engine</description>
     <inceptionYear>2009</inceptionYear>
+    
     <licenses>
         <license>
             <name>The Apache Software License, Version 2.0</name>
