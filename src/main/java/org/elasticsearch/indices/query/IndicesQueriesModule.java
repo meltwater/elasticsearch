@@ -100,6 +100,7 @@ public class IndicesQueriesModule extends AbstractModule {
         qpBinders.addBinding().to(FuzzyLikeThisFieldQueryParser.class).asEagerSingleton();
         qpBinders.addBinding().to(WrapperQueryParser.class).asEagerSingleton();
         qpBinders.addBinding().to(IndicesQueryParser.class).asEagerSingleton();
+        qpBinders.addBinding().to(SpanMultiTermQueryParser.class).asEagerSingleton();
         if (ShapesAvailability.JTS_AVAILABLE) {
             qpBinders.addBinding().to(GeoShapeQueryParser.class).asEagerSingleton();
         }
