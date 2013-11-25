@@ -33,6 +33,7 @@ import org.elasticsearch.common.network.NetworkService;
 import org.elasticsearch.common.settings.Settings;
 import org.elasticsearch.common.unit.TimeValue;
 import org.elasticsearch.common.util.concurrent.ConcurrentCollections;
+import org.elasticsearch.common.util.concurrent.EsRejectedExecutionException;
 import org.elasticsearch.common.xcontent.XContentBuilder;
 import org.elasticsearch.common.xcontent.XContentFactory;
 import org.elasticsearch.common.xcontent.XContentType;
@@ -62,56 +63,43 @@ public class MulticastZenPing extends AbstractLifecycleComponent<ZenPing> implem
     private static final byte[] INTERNAL_HEADER = new byte[]{1, 9, 8, 4};
 
     private final String address;
-
     private final int port;
-
     private final String group;
-
     private final int bufferSize;
-
     private final int ttl;
 
     private final ThreadPool threadPool;
-
     private final TransportService transportService;
-
     private final ClusterName clusterName;
-
     private final NetworkService networkService;
+    private final Version version;
+    private volatile DiscoveryNodesProvider nodesProvider;
 
     private final boolean pingEnabled;
 
-
-    private volatile DiscoveryNodesProvider nodesProvider;
-
     private volatile Receiver receiver;
-
     private volatile Thread receiverThread;
-
-    private MulticastSocket multicastSocket;
-
+    private volatile MulticastSocket multicastSocket;
     private DatagramPacket datagramPacketSend;
-
     private DatagramPacket datagramPacketReceive;
 
     private final AtomicInteger pingIdGenerator = new AtomicInteger();
-
     private final Map<Integer, ConcurrentMap<DiscoveryNode, PingResponse>> receivedResponses = newConcurrentMap();
 
     private final Object sendMutex = new Object();
-
     private final Object receiveMutex = new Object();
 
-    public MulticastZenPing(ThreadPool threadPool, TransportService transportService, ClusterName clusterName) {
-        this(EMPTY_SETTINGS, threadPool, transportService, clusterName, new NetworkService(EMPTY_SETTINGS));
+    public MulticastZenPing(ThreadPool threadPool, TransportService transportService, ClusterName clusterName, Version version) {
+        this(EMPTY_SETTINGS, threadPool, transportService, clusterName, new NetworkService(EMPTY_SETTINGS), version);
     }
 
-    public MulticastZenPing(Settings settings, ThreadPool threadPool, TransportService transportService, ClusterName clusterName, NetworkService networkService) {
+    public MulticastZenPing(Settings settings, ThreadPool threadPool, TransportService transportService, ClusterName clusterName, NetworkService networkService, Version version) {
         super(settings);
         this.threadPool = threadPool;
         this.transportService = transportService;
         this.clusterName = clusterName;
         this.networkService = networkService;
+        this.version = version;
 
         this.address = componentSettings.get("address");
         this.port = componentSettings.getAsInt("port", 54328);
@@ -212,18 +200,24 @@ public class MulticastZenPing extends AbstractLifecycleComponent<ZenPing> implem
     public PingResponse[] pingAndWait(TimeValue timeout) {
         final AtomicReference<PingResponse[]> response = new AtomicReference<PingResponse[]>();
         final CountDownLatch latch = new CountDownLatch(1);
-        ping(new PingListener() {
-            @Override
-            public void onPing(PingResponse[] pings) {
-                response.set(pings);
-                latch.countDown();
-            }
-        }, timeout);
+        try {
+            ping(new PingListener() {
+                @Override
+                public void onPing(PingResponse[] pings) {
+                    response.set(pings);
+                    latch.countDown();
+                }
+            }, timeout);
+        } catch (EsRejectedExecutionException ex) {
+            logger.debug("Ping execution rejected", ex);
+            return PingResponse.EMPTY;
+        }
         try {
             latch.await();
             return response.get();
         } catch (InterruptedException e) {
-            return null;
+            Thread.currentThread().interrupt();
+            return PingResponse.EMPTY;
         }
     }
 
@@ -233,7 +227,7 @@ public class MulticastZenPing extends AbstractLifecycleComponent<ZenPing> implem
             threadPool.generic().execute(new Runnable() {
                 @Override
                 public void run() {
-                    listener.onPing(new PingResponse[0]);
+                    listener.onPing(PingResponse.EMPTY);
                 }
             });
             return;
@@ -267,16 +261,16 @@ public class MulticastZenPing extends AbstractLifecycleComponent<ZenPing> implem
             return;
         }
         synchronized (sendMutex) {
-            CachedStreamOutput.Entry cachedEntry = CachedStreamOutput.popEntry();
             try {
-                StreamOutput out = cachedEntry.handles();
+                BytesStreamOutput bStream = new BytesStreamOutput();
+                StreamOutput out = new HandlesStreamOutput(bStream);
                 out.writeBytes(INTERNAL_HEADER);
-                Version.writeVersion(Version.CURRENT, out);
+                Version.writeVersion(version, out);
                 out.writeInt(id);
                 clusterName.writeTo(out);
                 nodesProvider.nodes().localNode().writeTo(out);
                 out.close();
-                datagramPacketSend.setData(cachedEntry.bytes().bytes().copyBytesArray().toBytes());
+                datagramPacketSend.setData(bStream.bytes().toBytes());
                 multicastSocket.send(datagramPacketSend);
                 if (logger.isTraceEnabled()) {
                     logger.trace("[{}] sending ping request", id);
@@ -290,8 +284,6 @@ public class MulticastZenPing extends AbstractLifecycleComponent<ZenPing> implem
                 } else {
                     logger.warn("failed to send multicast ping request: {}", ExceptionsHelper.detailedMessage(e));
                 }
-            } finally {
-                CachedStreamOutput.pushEntry(cachedEntry);
             }
         }
     }
@@ -376,7 +368,23 @@ public class MulticastZenPing extends AbstractLifecycleComponent<ZenPing> implem
                             continue;
                         } catch (Exception e) {
                             if (running) {
-                                logger.warn("failed to receive packet", e);
+                                if (multicastSocket.isClosed()) {
+                                    logger.warn("multicast socket closed while running, restarting...");
+                                    // for some reason, the socket got closed on us while we are still running
+                                    // make a best effort in trying to start the multicast socket again...
+                                    threadPool.generic().execute(new Runnable() {
+                                        @Override
+                                        public void run() {
+                                            MulticastZenPing.this.stop();
+                                            MulticastZenPing.this.start();
+                                        }
+                                    });
+                                    running = false;
+                                    return;
+                                } else {
+                                    logger.warn("failed to receive packet, throttling...", e);
+                                    Thread.sleep(500);
+                                }
                             }
                             continue;
                         }
@@ -422,7 +430,9 @@ public class MulticastZenPing extends AbstractLifecycleComponent<ZenPing> implem
                         handleNodePingRequest(id, requestingNodeX, clusterName);
                     }
                 } catch (Exception e) {
-                    logger.warn("unexpected exception in multicast receiver", e);
+                    if (running) {
+                        logger.warn("unexpected exception in multicast receiver", e);
+                    }
                 }
             }
         }
@@ -466,7 +476,7 @@ public class MulticastZenPing extends AbstractLifecycleComponent<ZenPing> implem
                 XContentBuilder builder = XContentFactory.contentBuilder(contentType);
                 builder.startObject().startObject("response");
                 builder.field("cluster_name", MulticastZenPing.this.clusterName.value());
-                builder.startObject("version").field("number", Version.CURRENT.number()).field("snapshot_build", Version.CURRENT.snapshot).endObject();
+                builder.startObject("version").field("number", version.number()).field("snapshot_build", version.snapshot).endObject();
                 builder.field("transport_address", localNode.address().toString());
 
                 if (nodesProvider.nodeService() != null) {

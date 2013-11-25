@@ -19,7 +19,11 @@
 
 package org.elasticsearch.index.query;
 
+import org.elasticsearch.ElasticSearchException;
+import org.elasticsearch.common.bytes.BytesReference;
 import org.elasticsearch.common.xcontent.XContentBuilder;
+import org.elasticsearch.common.xcontent.XContentFactory;
+import org.elasticsearch.common.xcontent.XContentType;
 
 import java.io.IOException;
 
@@ -27,6 +31,34 @@ import java.io.IOException;
  *
  */
 public abstract class BaseFilterBuilder implements FilterBuilder {
+
+    @Override
+    public String toString() {
+        try {
+            XContentBuilder builder = XContentFactory.jsonBuilder();
+            builder.prettyPrint();
+            toXContent(builder, EMPTY_PARAMS);
+            return builder.string();
+        } catch (Exception e) {
+            throw new ElasticSearchException("Failed to build filter", e);
+        }
+    }
+
+    @Override
+    public BytesReference buildAsBytes() throws ElasticSearchException {
+        return buildAsBytes(XContentType.JSON);
+    }
+
+    @Override
+    public BytesReference buildAsBytes(XContentType contentType) throws ElasticSearchException {
+        try {
+            XContentBuilder builder = XContentFactory.contentBuilder(contentType);
+            toXContent(builder, EMPTY_PARAMS);
+            return builder.bytes();
+        } catch (Exception e) {
+            throw new ElasticSearchException("Failed to build filter", e);
+        }
+    }
 
     @Override
     public XContentBuilder toXContent(XContentBuilder builder, Params params) throws IOException {

@@ -50,7 +50,7 @@ import static com.google.common.collect.Lists.newArrayList;
 
 /**
  */
-public class TransportIndicesStatsAction extends TransportBroadcastOperationAction<IndicesStatsRequest, IndicesStats, TransportIndicesStatsAction.IndexShardStatsRequest, ShardStats> {
+public class TransportIndicesStatsAction extends TransportBroadcastOperationAction<IndicesStatsRequest, IndicesStatsResponse, TransportIndicesStatsAction.IndexShardStatsRequest, ShardStats> {
 
     private final IndicesService indicesService;
 
@@ -76,11 +76,6 @@ public class TransportIndicesStatsAction extends TransportBroadcastOperationActi
         return new IndicesStatsRequest();
     }
 
-    @Override
-    protected boolean ignoreNonActiveExceptions() {
-        return true;
-    }
-
     /**
      * Status goes across *all* shards.
      */
@@ -101,7 +96,7 @@ public class TransportIndicesStatsAction extends TransportBroadcastOperationActi
 
 
     @Override
-    protected IndicesStats newResponse(IndicesStatsRequest request, AtomicReferenceArray shardsResponses, ClusterState clusterState) {
+    protected IndicesStatsResponse newResponse(IndicesStatsRequest request, AtomicReferenceArray shardsResponses, ClusterState clusterState) {
         int successfulShards = 0;
         int failedShards = 0;
         List<ShardOperationFailedException> shardFailures = null;
@@ -121,7 +116,7 @@ public class TransportIndicesStatsAction extends TransportBroadcastOperationActi
                 successfulShards++;
             }
         }
-        return new IndicesStats(shards.toArray(new ShardStats[shards.size()]), clusterState, shardsResponses.length(), successfulShards, failedShards, shardFailures);
+        return new IndicesStatsResponse(shards.toArray(new ShardStats[shards.size()]), clusterState, shardsResponses.length(), successfulShards, failedShards, shardFailures);
     }
 
     @Override
@@ -143,37 +138,60 @@ public class TransportIndicesStatsAction extends TransportBroadcastOperationActi
     protected ShardStats shardOperation(IndexShardStatsRequest request) throws ElasticSearchException {
         InternalIndexService indexService = (InternalIndexService) indicesService.indexServiceSafe(request.index());
         InternalIndexShard indexShard = (InternalIndexShard) indexService.shardSafe(request.shardId());
-        ShardStats stats = new ShardStats(indexShard.routingEntry());
+
+        CommonStatsFlags flags = new CommonStatsFlags().clear();
 
         if (request.request.docs()) {
-            stats.stats.docs = indexShard.docStats();
+            flags.set(CommonStatsFlags.Flag.Docs);
         }
         if (request.request.store()) {
-            stats.stats.store = indexShard.storeStats();
+            flags.set(CommonStatsFlags.Flag.Store);
         }
         if (request.request.indexing()) {
-            stats.stats.indexing = indexShard.indexingStats(request.request.types());
+            flags.set(CommonStatsFlags.Flag.Indexing);
+            flags.types(request.request.types());
         }
         if (request.request.get()) {
-            stats.stats.get = indexShard.getStats();
+            flags.set(CommonStatsFlags.Flag.Get);
         }
         if (request.request.search()) {
-            stats.stats().search = indexShard.searchStats(request.request.groups());
+            flags.set(CommonStatsFlags.Flag.Search);
+            flags.groups(request.request.groups());
         }
         if (request.request.merge()) {
-            stats.stats.merge = indexShard.mergeStats();
+            flags.set(CommonStatsFlags.Flag.Merge);
         }
         if (request.request.refresh()) {
-            stats.stats.refresh = indexShard.refreshStats();
+            flags.set(CommonStatsFlags.Flag.Refresh);
         }
         if (request.request.flush()) {
-            stats.stats.flush = indexShard.flushStats();
+            flags.set(CommonStatsFlags.Flag.Flush);
         }
         if (request.request.warmer()) {
-            stats.stats.warmer = indexShard.warmerStats();
+            flags.set(CommonStatsFlags.Flag.Warmer);
+        }
+        if (request.request.filterCache()) {
+            flags.set(CommonStatsFlags.Flag.FilterCache);
+        }
+        if (request.request.idCache()) {
+            flags.set(CommonStatsFlags.Flag.IdCache);
+        }
+        if (request.request.fieldData()) {
+            flags.set(CommonStatsFlags.Flag.FieldData);
+            flags.fieldDataFields(request.request.fieldDataFields());
+        }
+        if (request.request.percolate()) {
+            flags.set(CommonStatsFlags.Flag.Percolate);
+        }
+        if (request.request.segments()) {
+            flags.set(CommonStatsFlags.Flag.Segments);
+        }
+        if (request.request.completion()) {
+            flags.set(CommonStatsFlags.Flag.Completion);
+            flags.completionDataFields(request.request.completionFields());
         }
 
-        return stats;
+        return new ShardStats(indexShard, flags);
     }
 
     public static class IndexShardStatsRequest extends BroadcastShardOperationRequest {

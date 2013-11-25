@@ -61,15 +61,16 @@ public class NoneIndexShardGateway extends AbstractIndexShardComponent implement
 
     @Override
     public void recover(boolean indexShouldExists, RecoveryStatus recoveryStatus) throws IndexShardGatewayRecoveryException {
-        recoveryStatus().index().startTime(System.currentTimeMillis());
+        recoveryStatus.index().startTime(System.currentTimeMillis());
         // in the none case, we simply start the shard
         // clean the store, there should be nothing there...
         try {
+            logger.debug("cleaning shard content before creation");
             indexShard.store().deleteContent();
         } catch (IOException e) {
             logger.warn("failed to clean store before starting shard", e);
         }
-        indexShard.start("post recovery from gateway");
+        indexShard.postRecovery("post recovery from gateway");
         recoveryStatus.index().time(System.currentTimeMillis() - recoveryStatus.index().startTime());
         recoveryStatus.translog().startTime(System.currentTimeMillis());
         recoveryStatus.translog().time(System.currentTimeMillis() - recoveryStatus.index().startTime());
@@ -106,7 +107,7 @@ public class NoneIndexShardGateway extends AbstractIndexShardComponent implement
     }
 
     @Override
-    public void close(boolean delete) {
+    public void close() {
     }
 
     @Override

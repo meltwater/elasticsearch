@@ -21,17 +21,9 @@ package org.elasticsearch.index.fielddata;
 
 /**
  */
-public interface AtomicNumericFieldData<Script extends ScriptDocValues> extends AtomicFieldData<Script> {
-
-    ByteValues getByteValues();
-
-    ShortValues getShortValues();
-
-    IntValues getIntValues();
+public interface AtomicNumericFieldData extends AtomicFieldData<ScriptDocValues> {
 
     LongValues getLongValues();
-
-    FloatValues getFloatValues();
 
     DoubleValues getDoubleValues();
 

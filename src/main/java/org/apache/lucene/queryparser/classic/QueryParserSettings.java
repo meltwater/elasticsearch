@@ -19,7 +19,7 @@
 
 package org.apache.lucene.queryparser.classic;
 
-import gnu.trove.map.hash.TObjectFloatHashMap;
+import com.carrotsearch.hppc.ObjectFloatOpenHashMap;
 import org.apache.lucene.analysis.Analyzer;
 import org.apache.lucene.search.FuzzyQuery;
 import org.apache.lucene.search.MultiTermQuery;
@@ -34,10 +34,11 @@ public class QueryParserSettings {
 
     public static final boolean DEFAULT_ALLOW_LEADING_WILDCARD = true;
     public static final boolean DEFAULT_ANALYZE_WILDCARD = false;
+    public static final float DEFAULT_BOOST = 1.f;
 
     private String queryString;
     private String defaultField;
-    private float boost = 1.0f;
+    private float boost = DEFAULT_BOOST;
     private MapperQueryParser.Operator defaultOperator = QueryParser.Operator.OR;
     private boolean autoGeneratePhraseQueries = false;
     private boolean allowLeadingWildcard = DEFAULT_ALLOW_LEADING_WILDCARD;
@@ -62,9 +63,14 @@ public class QueryParserSettings {
 
     List<String> fields = null;
     Collection<String> queryTypes = null;
-    TObjectFloatHashMap<String> boosts = null;
+    ObjectFloatOpenHashMap<String> boosts = null;
     float tieBreaker = 0.0f;
     boolean useDisMax = true;
+
+    public boolean isCacheable() {
+        // a hack for now :) to determine if a query string is cacheable
+        return !queryString.contains("now");
+    }
 
     public String queryString() {
         return queryString;
@@ -266,11 +272,11 @@ public class QueryParserSettings {
         this.queryTypes = queryTypes;
     }
 
-    public TObjectFloatHashMap<String> boosts() {
+    public ObjectFloatOpenHashMap<String> boosts() {
         return boosts;
     }
 
-    public void boosts(TObjectFloatHashMap<String> boosts) {
+    public void boosts(ObjectFloatOpenHashMap<String> boosts) {
         this.boosts = boosts;
     }
 

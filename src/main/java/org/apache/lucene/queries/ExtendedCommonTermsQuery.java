@@ -25,7 +25,7 @@ import org.elasticsearch.common.lucene.search.Queries;
  * <tt>minimumNumberShouldMatch</tt> specification that uses the actual num of high frequent terms
  * to calculate the minimum matching terms.
  */
-public class ExtendedCommonTermsQuery extends XCommonTermsQuery {
+public class ExtendedCommonTermsQuery extends CommonTermsQuery {
 
     public ExtendedCommonTermsQuery(Occur highFreqOccur, Occur lowFreqOccur, float maxTermFrequency, boolean disableCoord) {
         super(highFreqOccur, lowFreqOccur, maxTermFrequency, disableCoord);
@@ -35,18 +35,39 @@ public class ExtendedCommonTermsQuery extends XCommonTermsQuery {
         super(highFreqOccur, lowFreqOccur, maxTermFrequency);
     }
     
-    private String minNumShouldMatchSpec;
+    private String lowFreqMinNumShouldMatchSpec;
+    private String highFreqMinNumShouldMatchSpec;
 
     @Override
-    protected int getMinimumNumberShouldMatch(int numOptional) {
-        if (minNumShouldMatchSpec == null) {
-            return 0;
-        }
-        return Queries.calculateMinShouldMatch(numOptional, minNumShouldMatchSpec);
-    }
-    
-    public void setMinimumNumberShouldMatch(String spec) {
-        this.minNumShouldMatchSpec = spec;
+    protected int calcLowFreqMinimumNumberShouldMatch(int numOptional) {
+        return calcMinimumNumberShouldMatch(lowFreqMinNumShouldMatchSpec, numOptional);
     }
 
+    protected int calcMinimumNumberShouldMatch(String spec, int numOptional) {
+        if (spec == null) {
+            return 0;
+        }
+        return Queries.calculateMinShouldMatch(numOptional, spec);
+    }
+
+    @Override
+    protected int calcHighFreqMinimumNumberShouldMatch(int numOptional) {
+        return calcMinimumNumberShouldMatch(highFreqMinNumShouldMatchSpec, numOptional);
+    }
+ 
+    public void setHighFreqMinimumNumberShouldMatch(String spec) {
+        this.highFreqMinNumShouldMatchSpec = spec;
+    }
+
+    public String getHighFreqMinimumNumberShouldMatchSpec() {
+        return highFreqMinNumShouldMatchSpec;
+    }
+
+    public void setLowFreqMinimumNumberShouldMatch(String spec) {
+        this.lowFreqMinNumShouldMatchSpec = spec;
+    }
+
+    public String getLowFreqMinimumNumberShouldMatchSpec() {
+        return lowFreqMinNumShouldMatchSpec;
+    }
 }

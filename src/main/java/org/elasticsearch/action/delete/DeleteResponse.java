@@ -54,50 +54,22 @@ public class DeleteResponse extends ActionResponse {
     /**
      * The index the document was deleted from.
      */
-    public String index() {
-        return this.index;
-    }
-
-    /**
-     * The index the document was deleted from.
-     */
     public String getIndex() {
-        return index;
-    }
-
-    /**
-     * The type of the document deleted.
-     */
-    public String type() {
-        return this.type;
+        return this.index;
     }
 
     /**
      * The type of the document deleted.
      */
     public String getType() {
-        return type;
-    }
-
-    /**
-     * The id of the document deleted.
-     */
-    public String id() {
-        return this.id;
+        return this.type;
     }
 
     /**
      * The id of the document deleted.
      */
     public String getId() {
-        return id;
-    }
-
-    /**
-     * The version of the delete operation.
-     */
-    public long version() {
-        return this.version;
+        return this.id;
     }
 
     /**
@@ -110,13 +82,6 @@ public class DeleteResponse extends ActionResponse {
     /**
      * Returns <tt>true</tt> if there was no doc found to delete.
      */
-    public boolean notFound() {
-        return notFound;
-    }
-
-    /**
-     * Returns <tt>true</tt> if there was no doc found to delete.
-     */
     public boolean isNotFound() {
         return notFound;
     }
@@ -124,9 +89,9 @@ public class DeleteResponse extends ActionResponse {
     @Override
     public void readFrom(StreamInput in) throws IOException {
         super.readFrom(in);
-        index = in.readString();
+        index = in.readSharedString();
+        type = in.readSharedString();
         id = in.readString();
-        type = in.readString();
         version = in.readLong();
         notFound = in.readBoolean();
     }
@@ -134,9 +99,9 @@ public class DeleteResponse extends ActionResponse {
     @Override
     public void writeTo(StreamOutput out) throws IOException {
         super.writeTo(out);
-        out.writeString(index);
+        out.writeSharedString(index);
+        out.writeSharedString(type);
         out.writeString(id);
-        out.writeString(type);
         out.writeLong(version);
         out.writeBoolean(notFound);
     }

@@ -52,9 +52,10 @@ public class SpanNearQueryParser implements QueryParser {
         XContentParser parser = parseContext.parser();
 
         float boost = 1.0f;
-        int slop = -1;
+        Integer slop = null;
         boolean inOrder = true;
         boolean collectPayloads = true;
+        String queryName = null;
 
         List<SpanQuery> clauses = newArrayList();
 
@@ -81,9 +82,11 @@ public class SpanNearQueryParser implements QueryParser {
                 } else if ("collect_payloads".equals(currentFieldName) || "collectPayloads".equals(currentFieldName)) {
                     collectPayloads = parser.booleanValue();
                 } else if ("slop".equals(currentFieldName)) {
-                    slop = parser.intValue();
+                    slop = Integer.valueOf(parser.intValue());
                 } else if ("boost".equals(currentFieldName)) {
                     boost = parser.floatValue();
+                } else if ("_name".equals(currentFieldName)) {
+                    queryName = parser.text();
                 } else {
                     throw new QueryParsingException(parseContext.index(), "[span_near] query does not support [" + currentFieldName + "]");
                 }
@@ -94,12 +97,15 @@ public class SpanNearQueryParser implements QueryParser {
         if (clauses.isEmpty()) {
             throw new QueryParsingException(parseContext.index(), "span_near must include [clauses]");
         }
-        if (slop == -1) {
+        if (slop == null) {
             throw new QueryParsingException(parseContext.index(), "span_near must include [slop]");
         }
 
-        SpanNearQuery query = new SpanNearQuery(clauses.toArray(new SpanQuery[clauses.size()]), slop, inOrder, collectPayloads);
+        SpanNearQuery query = new SpanNearQuery(clauses.toArray(new SpanQuery[clauses.size()]), slop.intValue(), inOrder, collectPayloads);
         query.setBoost(boost);
+        if (queryName != null) {
+            parseContext.addNamedQuery(queryName, query);
+        }
         return query;
     }
 }

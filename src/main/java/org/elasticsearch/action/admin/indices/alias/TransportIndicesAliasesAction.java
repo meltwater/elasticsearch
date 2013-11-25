@@ -21,9 +21,12 @@ package org.elasticsearch.action.admin.indices.alias;
 
 import com.google.common.collect.Sets;
 import org.elasticsearch.ElasticSearchException;
+import org.elasticsearch.action.ActionListener;
 import org.elasticsearch.action.support.master.TransportMasterNodeOperationAction;
 import org.elasticsearch.cluster.ClusterService;
 import org.elasticsearch.cluster.ClusterState;
+import org.elasticsearch.cluster.ack.ClusterStateUpdateListener;
+import org.elasticsearch.cluster.ack.ClusterStateUpdateResponse;
 import org.elasticsearch.cluster.block.ClusterBlockException;
 import org.elasticsearch.cluster.block.ClusterBlockLevel;
 import org.elasticsearch.cluster.metadata.AliasAction;
@@ -34,11 +37,9 @@ import org.elasticsearch.threadpool.ThreadPool;
 import org.elasticsearch.transport.TransportService;
 
 import java.util.Set;
-import java.util.concurrent.CountDownLatch;
-import java.util.concurrent.atomic.AtomicReference;
 
 /**
- *
+ * Add/remove aliases action
  */
 public class TransportIndicesAliasesAction extends TransportMasterNodeOperationAction<IndicesAliasesRequest, IndicesAliasesResponse> {
 
@@ -53,7 +54,8 @@ public class TransportIndicesAliasesAction extends TransportMasterNodeOperationA
 
     @Override
     protected String executor() {
-        return ThreadPool.Names.MANAGEMENT;
+        // we go async right away...
+        return ThreadPool.Names.SAME;
     }
 
     @Override
@@ -81,38 +83,23 @@ public class TransportIndicesAliasesAction extends TransportMasterNodeOperationA
     }
 
     @Override
-    protected IndicesAliasesResponse masterOperation(IndicesAliasesRequest request, ClusterState state) throws ElasticSearchException {
-        final AtomicReference<IndicesAliasesResponse> responseRef = new AtomicReference<IndicesAliasesResponse>();
-        final AtomicReference<Throwable> failureRef = new AtomicReference<Throwable>();
-        final CountDownLatch latch = new CountDownLatch(1);
-        indexAliasesService.indicesAliases(new MetaDataIndexAliasesService.Request(request.aliasActions().toArray(new AliasAction[request.aliasActions().size()]), request.timeout()), new MetaDataIndexAliasesService.Listener() {
+    protected void masterOperation(final IndicesAliasesRequest request, final ClusterState state, final ActionListener<IndicesAliasesResponse> listener) throws ElasticSearchException {
+
+        IndicesAliasesClusterStateUpdateRequest updateRequest = new IndicesAliasesClusterStateUpdateRequest()
+                .ackTimeout(request.timeout()).masterNodeTimeout(request.masterNodeTimeout())
+                .actions(request.aliasActions().toArray(new AliasAction[request.aliasActions().size()]));
+
+        indexAliasesService.indicesAliases(updateRequest, new ClusterStateUpdateListener() {
             @Override
-            public void onResponse(MetaDataIndexAliasesService.Response response) {
-                responseRef.set(new IndicesAliasesResponse(response.acknowledged()));
-                latch.countDown();
+            public void onResponse(ClusterStateUpdateResponse response) {
+                listener.onResponse(new IndicesAliasesResponse(response.isAcknowledged()));
             }
 
             @Override
             public void onFailure(Throwable t) {
-                failureRef.set(t);
-                latch.countDown();
+                logger.debug("failed to perform aliases", t);
+                listener.onFailure(t);
             }
         });
-
-        try {
-            latch.await();
-        } catch (InterruptedException e) {
-            failureRef.set(e);
-        }
-
-        if (failureRef.get() != null) {
-            if (failureRef.get() instanceof ElasticSearchException) {
-                throw (ElasticSearchException) failureRef.get();
-            } else {
-                throw new ElasticSearchException(failureRef.get().getMessage(), failureRef.get());
-            }
-        }
-
-        return responseRef.get();
     }
 }

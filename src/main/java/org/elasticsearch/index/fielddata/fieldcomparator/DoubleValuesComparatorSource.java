@@ -31,12 +31,14 @@ import java.io.IOException;
  */
 public class DoubleValuesComparatorSource extends IndexFieldData.XFieldComparatorSource {
 
-    private final IndexNumericFieldData indexFieldData;
+    private final IndexNumericFieldData<?> indexFieldData;
     private final Object missingValue;
+    private final SortMode sortMode;
 
-    public DoubleValuesComparatorSource(IndexNumericFieldData indexFieldData, @Nullable Object missingValue) {
+    public DoubleValuesComparatorSource(IndexNumericFieldData<?> indexFieldData, @Nullable Object missingValue, SortMode sortMode) {
         this.indexFieldData = indexFieldData;
         this.missingValue = missingValue;
+        this.sortMode = sortMode;
     }
 
     @Override
@@ -48,15 +50,7 @@ public class DoubleValuesComparatorSource extends IndexFieldData.XFieldComparato
     public FieldComparator<?> newComparator(String fieldname, int numHits, int sortPos, boolean reversed) throws IOException {
         assert fieldname.equals(indexFieldData.getFieldNames().indexName());
 
-        double dMissingValue;
-        if (missingValue == null || "_last".equals(missingValue)) {
-            dMissingValue = reversed ? Double.NEGATIVE_INFINITY : Double.POSITIVE_INFINITY;
-        } else if ("_first".equals(missingValue)) {
-            dMissingValue = reversed ? Double.POSITIVE_INFINITY : Double.NEGATIVE_INFINITY;
-        } else {
-            dMissingValue = missingValue instanceof Number ? ((Number) missingValue).doubleValue() : Double.parseDouble(missingValue.toString());
-        }
-
-        return new DoubleValuesComparator(indexFieldData, dMissingValue, numHits);
+        final double dMissingValue = (Double) missingObject(missingValue, reversed);
+        return new DoubleValuesComparator(indexFieldData, dMissingValue, numHits, sortMode);
     }
 }

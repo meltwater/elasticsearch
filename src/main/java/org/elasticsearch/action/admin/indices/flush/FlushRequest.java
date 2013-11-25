@@ -19,8 +19,8 @@
 
 package org.elasticsearch.action.admin.indices.flush;
 
+import org.elasticsearch.Version;
 import org.elasticsearch.action.support.broadcast.BroadcastOperationRequest;
-import org.elasticsearch.action.support.broadcast.BroadcastOperationThreading;
 import org.elasticsearch.common.io.stream.StreamInput;
 import org.elasticsearch.common.io.stream.StreamOutput;
 
@@ -39,10 +39,7 @@ import java.io.IOException;
  */
 public class FlushRequest extends BroadcastOperationRequest<FlushRequest> {
 
-    private boolean refresh = false;
-
     private boolean force = false;
-
     private boolean full = false;
 
     FlushRequest() {
@@ -55,23 +52,6 @@ public class FlushRequest extends BroadcastOperationRequest<FlushRequest> {
      */
     public FlushRequest(String... indices) {
         super(indices);
-        // we want to do the refresh in parallel on local shards...
-        operationThreading(BroadcastOperationThreading.THREAD_PER_SHARD);
-    }
-
-    /**
-     * Should a refresh be performed once the flush is done. Defaults to <tt>false</tt>.
-     */
-    public boolean refresh() {
-        return this.refresh;
-    }
-
-    /**
-     * Should a refresh be performed once the flush is done. Defaults to <tt>false</tt>.
-     */
-    public FlushRequest refresh(boolean refresh) {
-        this.refresh = refresh;
-        return this;
     }
 
     /**
@@ -107,7 +87,9 @@ public class FlushRequest extends BroadcastOperationRequest<FlushRequest> {
     @Override
     public void writeTo(StreamOutput out) throws IOException {
         super.writeTo(out);
-        out.writeBoolean(refresh);
+        if (out.getVersion().onOrBefore(Version.V_0_90_3)) {
+            out.writeBoolean(false); // refresh flag
+        }
         out.writeBoolean(full);
         out.writeBoolean(force);
     }
@@ -115,7 +97,9 @@ public class FlushRequest extends BroadcastOperationRequest<FlushRequest> {
     @Override
     public void readFrom(StreamInput in) throws IOException {
         super.readFrom(in);
-        refresh = in.readBoolean();
+        if (in.getVersion().onOrBefore(Version.V_0_90_3)) {
+            in.readBoolean(); // refresh flag
+        }
         full = in.readBoolean();
         force = in.readBoolean();
     }

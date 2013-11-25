@@ -19,27 +19,19 @@
 
 package org.elasticsearch.index.fielddata.fieldcomparator;
 
-import org.apache.lucene.index.AtomicReaderContext;
-import org.apache.lucene.search.FieldComparator;
-import org.elasticsearch.index.fielddata.FloatValues;
 import org.elasticsearch.index.fielddata.IndexNumericFieldData;
 
 import java.io.IOException;
 
 /**
  */
-public class FloatValuesComparator extends FieldComparator<Float> {
+public final class FloatValuesComparator extends DoubleValuesComparatorBase<Float> {
 
-    private final IndexNumericFieldData indexFieldData;
-    private final float missingValue;
+    private final float[] values;
 
-    protected final float[] values;
-    private float bottom;
-    private FloatValues readerValues;
-
-    public FloatValuesComparator(IndexNumericFieldData indexFieldData, float missingValue, int numHits) {
-        this.indexFieldData = indexFieldData;
-        this.missingValue = missingValue;
+    public FloatValuesComparator(IndexNumericFieldData<?> indexFieldData, float missingValue, int numHits, SortMode sortMode) {
+        super(indexFieldData, missingValue, sortMode);
+        assert indexFieldData.getNumericType().requiredBits() <= 32;
         this.values = new float[numHits];
     }
 
@@ -47,13 +39,7 @@ public class FloatValuesComparator extends FieldComparator<Float> {
     public int compare(int slot1, int slot2) {
         final float v1 = values[slot1];
         final float v2 = values[slot2];
-        if (v1 > v2) {
-            return 1;
-        } else if (v1 < v2) {
-            return -1;
-        } else {
-            return 0;
-        }
+        return Float.compare(v1, v2);
     }
 
     @Override
@@ -62,27 +48,8 @@ public class FloatValuesComparator extends FieldComparator<Float> {
     }
 
     @Override
-    public int compareBottom(int doc) throws IOException {
-        float v2 = readerValues.getValueMissing(doc, missingValue);
-
-        if (bottom > v2) {
-            return 1;
-        } else if (bottom < v2) {
-            return -1;
-        } else {
-            return 0;
-        }
-    }
-
-    @Override
     public void copy(int slot, int doc) throws IOException {
-        values[slot] = readerValues.getValueMissing(doc, missingValue);
-    }
-
-    @Override
-    public FieldComparator<Float> setNextReader(AtomicReaderContext context) throws IOException {
-        this.readerValues = indexFieldData.load(context).getFloatValues();
-        return this;
+        values[slot] = (float) sortMode.getRelevantValue(readerValues, doc, missingValue);
     }
 
     @Override
@@ -91,15 +58,17 @@ public class FloatValuesComparator extends FieldComparator<Float> {
     }
 
     @Override
-    public int compareDocToValue(int doc, Float valueObj) throws IOException {
-        final float value = valueObj.floatValue();
-        float docValue = readerValues.getValueMissing(doc, missingValue);
-        if (docValue < value) {
-            return -1;
-        } else if (docValue > value) {
-            return 1;
-        } else {
-            return 0;
-        }
+    public void add(int slot, int doc) {
+        values[slot] += (float) sortMode.getRelevantValue(readerValues, doc, missingValue);
+    }
+
+    @Override
+    public void divide(int slot, int divisor) {
+        values[slot] /= divisor;
+    }
+
+    @Override
+    public void missing(int slot) {
+        values[slot] = (float) missingValue;
     }
 }

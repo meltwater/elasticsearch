@@ -19,11 +19,11 @@
 
 package org.elasticsearch.index.gateway.local;
 
-import com.google.common.io.Closeables;
 import org.apache.lucene.index.IndexWriter;
 import org.apache.lucene.index.IndexWriterConfig;
 import org.apache.lucene.index.SegmentInfos;
 import org.elasticsearch.ElasticSearchException;
+import org.elasticsearch.ExceptionsHelper;
 import org.elasticsearch.common.inject.Inject;
 import org.elasticsearch.common.io.stream.InputStreamStreamInput;
 import org.elasticsearch.common.lucene.Lucene;
@@ -49,6 +49,7 @@ import java.io.EOFException;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.IOException;
+import java.util.Arrays;
 import java.util.concurrent.ScheduledFuture;
 
 /**
@@ -103,9 +104,15 @@ public class LocalIndexShardGateway extends AbstractIndexShardComponent implemen
             SegmentInfos si = null;
             try {
                 si = Lucene.readSegmentInfos(indexShard.store().directory());
-            } catch (IOException e) {
+            } catch (Throwable e) {
+                String files = "_unknown_";
+                try {
+                    files = Arrays.toString(indexShard.store().directory().listAll());
+                } catch (Throwable e1) {
+                    files += " (failure=" + ExceptionsHelper.detailedMessage(e1) + ")";
+                }
                 if (indexShouldExists && indexShard.store().indexStore().persistent()) {
-                    throw new IndexShardGatewayRecoveryException(shardId(), "shard allocated for local recovery (post api), should exists, but doesn't", e);
+                    throw new IndexShardGatewayRecoveryException(shardId(), "shard allocated for local recovery (post api), should exist, but doesn't, current files: " + files, e);
                 }
             }
             if (si != null) {
@@ -125,8 +132,8 @@ public class LocalIndexShardGateway extends AbstractIndexShardComponent implemen
                     writer.close();
                 }
             }
-        } catch (IOException e) {
-            throw new IndexShardGatewayRecoveryException(shardId(), "Failed to fetch index version after copying it over", e);
+        } catch (Throwable e) {
+            throw new IndexShardGatewayRecoveryException(shardId(), "failed to fetch index version after copying it over", e);
         }
         recoveryStatus.index().updateVersion(version);
         recoveryStatus.index().time(System.currentTimeMillis() - recoveryStatus.index().startTime());
@@ -148,7 +155,7 @@ public class LocalIndexShardGateway extends AbstractIndexShardComponent implemen
         recoveryStatus.updateStage(RecoveryStatus.Stage.START);
         if (translogId == -1) {
             // no translog files, bail
-            indexShard.start("post recovery from gateway, no translog");
+            indexShard.postRecovery("post recovery from gateway, no translog");
             // no index, just start the shard and bail
             recoveryStatus.start().time(System.currentTimeMillis() - recoveryStatus.start().startTime());
             recoveryStatus.start().checkIndexTime(indexShard.checkIndexTook());
@@ -183,7 +190,7 @@ public class LocalIndexShardGateway extends AbstractIndexShardComponent implemen
         if (recoveringTranslogFile == null || !recoveringTranslogFile.exists()) {
             // no translog to recovery from, start and bail
             // no translog files, bail
-            indexShard.start("post recovery from gateway, no translog");
+            indexShard.postRecovery("post recovery from gateway, no translog");
             // no index, just start the shard and bail
             recoveryStatus.start().time(System.currentTimeMillis() - recoveryStatus.start().startTime());
             recoveryStatus.start().checkIndexTime(indexShard.checkIndexTook());
@@ -227,10 +234,14 @@ public class LocalIndexShardGateway extends AbstractIndexShardComponent implemen
             }
         } catch (Throwable e) {
             // we failed to recovery, make sure to delete the translog file (and keep the recovering one)
-            indexShard.translog().close(true);
+            indexShard.translog().closeWithDelete();
             throw new IndexShardGatewayRecoveryException(shardId, "failed to recover shard", e);
         } finally {
-            Closeables.closeQuietly(fs);
+            try {
+                fs.close();
+            } catch (IOException e) {
+                // ignore
+            }
         }
         indexShard.performRecoveryFinalization(true);
 
@@ -270,7 +281,7 @@ public class LocalIndexShardGateway extends AbstractIndexShardComponent implemen
     }
 
     @Override
-    public void close(boolean delete) {
+    public void close() {
         if (flushScheduler != null) {
             flushScheduler.cancel(false);
         }

@@ -76,8 +76,16 @@ public class MapBuilder<K, V> {
         return map.containsKey(key);
     }
 
+    public boolean isEmpty() {
+        return map.isEmpty();
+    }
+
     public Map<K, V> map() {
         return this.map;
+    }
+
+    public Map<K, V> readOnlyMap() {
+        return XMaps.makeReadOnly(map);
     }
 
     public ImmutableMap<K, V> immutableMap() {

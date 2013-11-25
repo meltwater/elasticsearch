@@ -33,59 +33,52 @@ import java.io.IOException;
  * slow for medium to large result sets but possibly
  * very fast for very small results sets.
  */
-public final class BytesRefValComparator extends FieldComparator<BytesRef> {
+public final class BytesRefValComparator extends NestedWrappableComparator<BytesRef> {
 
-    private final IndexFieldData indexFieldData;
-    private BytesRef[] values;
-    private BytesValues docTerms;
+    private final IndexFieldData<?> indexFieldData;
+    private final SortMode sortMode;
+    private final BytesRef missingValue;
+
+    private final BytesRef[] values;
     private BytesRef bottom;
+    private BytesValues docTerms;
 
-    BytesRefValComparator(IndexFieldData indexFieldData, int numHits) {
+    BytesRefValComparator(IndexFieldData<?> indexFieldData, int numHits, SortMode sortMode, BytesRef missingValue) {
+        this.sortMode = sortMode;
         values = new BytesRef[numHits];
         this.indexFieldData = indexFieldData;
+        this.missingValue = missingValue;
     }
 
     @Override
     public int compare(int slot1, int slot2) {
         final BytesRef val1 = values[slot1];
         final BytesRef val2 = values[slot2];
-        if (val1 == null) {
-            if (val2 == null) {
-                return 0;
-            }
-            return -1;
-        } else if (val2 == null) {
-            return 1;
-        }
-
-        return val1.compareTo(val2);
+        return compareValues(val1, val2);
     }
 
     @Override
-    public int compareBottom(int doc) {
-        BytesRef val2 = docTerms.getValue(doc);
-        if (bottom == null) {
-            if (val2 == null) {
-                return 0;
-            }
-            return -1;
-        } else if (val2 == null) {
-            return 1;
-        }
-        return bottom.compareTo(val2);
+    public int compareBottom(int doc) throws IOException {
+        BytesRef val2 = sortMode.getRelevantValue(docTerms, doc, missingValue);
+        return compareValues(bottom, val2);
     }
 
     @Override
-    public void copy(int slot, int doc) {
-        if (values[slot] == null) {
-            values[slot] = new BytesRef();
+    public void copy(int slot, int doc) throws IOException {
+        BytesRef relevantValue = sortMode.getRelevantValue(docTerms, doc, missingValue);
+        if (relevantValue == missingValue) {
+            values[slot] = missingValue;
+        } else {
+            if (values[slot] == null || values[slot] == missingValue) {
+                values[slot] = new BytesRef();
+            }
+            values[slot].copyBytes(relevantValue);
         }
-        docTerms.getValueScratch(doc, values[slot]);
     }
 
     @Override
     public FieldComparator<BytesRef> setNextReader(AtomicReaderContext context) throws IOException {
-        docTerms = indexFieldData.load(context).getBytesValues();
+        docTerms = indexFieldData.load(context).getBytesValues(false);
         return this;
     }
 
@@ -114,6 +107,17 @@ public final class BytesRefValComparator extends FieldComparator<BytesRef> {
 
     @Override
     public int compareDocToValue(int doc, BytesRef value) {
-        return docTerms.getValue(doc).compareTo(value);
+        return  sortMode.getRelevantValue(docTerms, doc, missingValue).compareTo(value);
     }
+
+    @Override
+    public void missing(int slot) {
+        values[slot] = missingValue;
+    }
+
+    @Override
+    public int compareBottomMissing() {
+        return compareValues(bottom, missingValue);
+    }
+
 }

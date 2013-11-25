@@ -20,6 +20,7 @@
 package org.elasticsearch.action.search;
 
 import com.google.common.collect.Lists;
+import org.elasticsearch.ElasticSearchIllegalArgumentException;
 import org.elasticsearch.ElasticSearchParseException;
 import org.elasticsearch.action.ActionRequest;
 import org.elasticsearch.action.ActionRequestValidationException;
@@ -69,11 +70,14 @@ public class MultiSearchRequest extends ActionRequest<MultiSearchRequest> {
 
     public MultiSearchRequest add(byte[] data, int from, int length, boolean contentUnsafe,
                                   @Nullable String[] indices, @Nullable String[] types, @Nullable String searchType) throws Exception {
-        return add(new BytesArray(data, from, length), contentUnsafe, indices, types, searchType, IgnoreIndices.NONE);
+        return add(new BytesArray(data, from, length), contentUnsafe, indices, types, searchType, null, IgnoreIndices.NONE, true);
     }
 
-    public MultiSearchRequest add(BytesReference data, boolean contentUnsafe,
-                                  @Nullable String[] indices, @Nullable String[] types, @Nullable String searchType, IgnoreIndices ignoreIndices) throws Exception {
+    public MultiSearchRequest add(BytesReference data, boolean contentUnsafe, @Nullable String[] indices, @Nullable String[] types, @Nullable String searchType, IgnoreIndices ignoreIndices) throws Exception {
+        return add(data, contentUnsafe, indices, types, searchType, null, ignoreIndices, true);
+    }
+
+    public MultiSearchRequest add(BytesReference data, boolean contentUnsafe, @Nullable String[] indices, @Nullable String[] types, @Nullable String searchType, @Nullable String routing, IgnoreIndices ignoreIndices, boolean allowExplicitIndex) throws Exception {
         XContent xContent = XContentFactory.xContent(data);
         int from = 0;
         int length = data.length();
@@ -89,12 +93,18 @@ public class MultiSearchRequest extends ActionRequest<MultiSearchRequest> {
                 continue;
             }
 
-            SearchRequest searchRequest = new SearchRequest(indices);
+            SearchRequest searchRequest = new SearchRequest();
+            if (indices != null) {
+                searchRequest.indices(indices);
+            }
             if (ignoreIndices != null) {
                 searchRequest.ignoreIndices(ignoreIndices);
             }
             if (types != null && types.length > 0) {
                 searchRequest.types(types);
+            }
+            if (routing != null) {
+                searchRequest.routing(routing);
             }
             searchRequest.searchType(searchType);
 
@@ -112,6 +122,9 @@ public class MultiSearchRequest extends ActionRequest<MultiSearchRequest> {
                                 currentFieldName = parser.currentName();
                             } else if (token.isValue()) {
                                 if ("index".equals(currentFieldName) || "indices".equals(currentFieldName)) {
+                                    if (!allowExplicitIndex) {
+                                        throw new ElasticSearchIllegalArgumentException("explicit index in multi search is not allowed");
+                                    }
                                     searchRequest.indices(Strings.splitStringByCommaToArray(parser.text()));
                                 } else if ("type".equals(currentFieldName) || "types".equals(currentFieldName)) {
                                     searchRequest.types(Strings.splitStringByCommaToArray(parser.text()));
@@ -126,6 +139,9 @@ public class MultiSearchRequest extends ActionRequest<MultiSearchRequest> {
                                 }
                             } else if (token == XContentParser.Token.START_ARRAY) {
                                 if ("index".equals(currentFieldName) || "indices".equals(currentFieldName)) {
+                                    if (!allowExplicitIndex) {
+                                        throw new ElasticSearchIllegalArgumentException("explicit index in multi search is not allowed");
+                                    }
                                     searchRequest.indices(parseArray(parser));
                                 } else if ("type".equals(currentFieldName) || "types".equals(currentFieldName)) {
                                     searchRequest.types(parseArray(parser));

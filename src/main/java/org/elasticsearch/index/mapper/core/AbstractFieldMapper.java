@@ -19,12 +19,15 @@
 
 package org.elasticsearch.index.mapper.core;
 
+import com.carrotsearch.hppc.ObjectOpenHashSet;
 import com.google.common.base.Objects;
 import org.apache.lucene.analysis.Analyzer;
 import org.apache.lucene.document.Field;
 import org.apache.lucene.document.FieldType;
 import org.apache.lucene.index.FieldInfo.IndexOptions;
 import org.apache.lucene.index.Term;
+import org.apache.lucene.queries.TermFilter;
+import org.apache.lucene.queries.TermsFilter;
 import org.apache.lucene.search.*;
 import org.apache.lucene.util.BytesRef;
 import org.elasticsearch.ElasticSearchIllegalArgumentException;
@@ -32,26 +35,32 @@ import org.elasticsearch.common.Nullable;
 import org.elasticsearch.common.lucene.BytesRefs;
 import org.elasticsearch.common.lucene.Lucene;
 import org.elasticsearch.common.lucene.search.RegexpFilter;
-import org.elasticsearch.common.lucene.search.TermFilter;
-import org.elasticsearch.common.lucene.search.XTermsFilter;
 import org.elasticsearch.common.settings.ImmutableSettings;
 import org.elasticsearch.common.settings.Settings;
 import org.elasticsearch.common.xcontent.XContentBuilder;
 import org.elasticsearch.index.analysis.NamedAnalyzer;
+import org.elasticsearch.index.codec.docvaluesformat.DocValuesFormatProvider;
+import org.elasticsearch.index.codec.docvaluesformat.DocValuesFormatService;
 import org.elasticsearch.index.codec.postingsformat.PostingFormats;
 import org.elasticsearch.index.codec.postingsformat.PostingsFormatProvider;
+import org.elasticsearch.index.codec.postingsformat.PostingsFormatService;
 import org.elasticsearch.index.fielddata.FieldDataType;
+import org.elasticsearch.index.fielddata.IndexFieldDataService;
 import org.elasticsearch.index.mapper.*;
 import org.elasticsearch.index.query.QueryParseContext;
+import org.elasticsearch.index.search.FieldDataTermsFilter;
+import org.elasticsearch.index.similarity.SimilarityLookupService;
 import org.elasticsearch.index.similarity.SimilarityProvider;
 
 import java.io.IOException;
+import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 
 /**
  *
  */
-public abstract class AbstractFieldMapper<T> implements FieldMapper<T>, Mapper {
+public abstract class AbstractFieldMapper<T> implements FieldMapper<T> {
 
     public static class Defaults {
         public static final FieldType FIELD_TYPE = new FieldType();
@@ -69,87 +78,6 @@ public abstract class AbstractFieldMapper<T> implements FieldMapper<T>, Mapper {
         public static final float BOOST = 1.0f;
     }
 
-    public abstract static class OpenBuilder<T extends Builder, Y extends AbstractFieldMapper> extends AbstractFieldMapper.Builder<T, Y> {
-
-        protected OpenBuilder(String name, FieldType fieldType) {
-            super(name, fieldType);
-        }
-
-        @Override
-        public T index(boolean index) {
-            return super.index(index);
-        }
-
-        @Override
-        public T store(boolean store) {
-            return super.store(store);
-        }
-
-        @Override
-        public T storeTermVectors(boolean termVectors) {
-            return super.storeTermVectors(termVectors);
-        }
-
-        @Override
-        public T storeTermVectorOffsets(boolean termVectorOffsets) {
-            return super.storeTermVectorOffsets(termVectorOffsets);
-        }
-
-        @Override
-        public T storeTermVectorPositions(boolean termVectorPositions) {
-            return super.storeTermVectorPositions(termVectorPositions);
-        }
-
-        @Override
-        public T storeTermVectorPayloads(boolean termVectorPayloads) {
-            return super.storeTermVectorPayloads(termVectorPayloads);
-        }
-
-        @Override
-        public T tokenized(boolean tokenized) {
-            return super.tokenized(tokenized);
-        }
-
-        @Override
-        public T boost(float boost) {
-            return super.boost(boost);
-        }
-
-        @Override
-        public T omitNorms(boolean omitNorms) {
-            return super.omitNorms(omitNorms);
-        }
-
-        @Override
-        public T indexOptions(IndexOptions indexOptions) {
-            return super.indexOptions(indexOptions);
-        }
-
-        @Override
-        public T indexName(String indexName) {
-            return super.indexName(indexName);
-        }
-
-        @Override
-        public T indexAnalyzer(NamedAnalyzer indexAnalyzer) {
-            return super.indexAnalyzer(indexAnalyzer);
-        }
-
-        @Override
-        public T searchAnalyzer(NamedAnalyzer searchAnalyzer) {
-            return super.searchAnalyzer(searchAnalyzer);
-        }
-
-        @Override
-        public T similarity(SimilarityProvider similarity) {
-            return super.similarity(similarity);
-        }
-
-        public T fieldDataSettings(String settings) {
-            return super.fieldDataSettings(settings);
-        }
-    }
-
     public abstract static class Builder<T extends Builder, Y extends AbstractFieldMapper> extends Mapper.Builder<T, Y> {
 
         protected final FieldType fieldType;
@@ -160,7 +88,8 @@ public abstract class AbstractFieldMapper<T> implements FieldMapper<T>, Mapper {
         protected NamedAnalyzer searchAnalyzer;
         protected Boolean includeInAll;
         protected boolean indexOptionsSet = false;
-        protected PostingsFormatProvider provider;
+        protected PostingsFormatProvider postingsProvider;
+        protected DocValuesFormatProvider docValuesProvider;
         protected SimilarityProvider similarity;
         @Nullable
         protected Settings fieldDataSettings;
@@ -170,124 +99,138 @@ public abstract class AbstractFieldMapper<T> implements FieldMapper<T>, Mapper {
             this.fieldType = fieldType;
         }
 
-        protected T index(boolean index) {
+        public T index(boolean index) {
             this.fieldType.setIndexed(index);
             return builder;
         }
 
-        protected T store(boolean store) {
+        public T store(boolean store) {
             this.fieldType.setStored(store);
             return builder;
         }
 
-        protected T storeTermVectors(boolean termVectors) {
+        public T storeTermVectors(boolean termVectors) {
             this.fieldType.setStoreTermVectors(termVectors);
             return builder;
         }
 
-        protected T storeTermVectorOffsets(boolean termVectorOffsets) {
+        public T storeTermVectorOffsets(boolean termVectorOffsets) {
             this.fieldType.setStoreTermVectors(termVectorOffsets);
             this.fieldType.setStoreTermVectorOffsets(termVectorOffsets);
             return builder;
         }
 
-        protected T storeTermVectorPositions(boolean termVectorPositions) {
+        public T storeTermVectorPositions(boolean termVectorPositions) {
             this.fieldType.setStoreTermVectors(termVectorPositions);
             this.fieldType.setStoreTermVectorPositions(termVectorPositions);
             return builder;
         }
 
-        protected T storeTermVectorPayloads(boolean termVectorPayloads) {
+        public T storeTermVectorPayloads(boolean termVectorPayloads) {
             this.fieldType.setStoreTermVectors(termVectorPayloads);
             this.fieldType.setStoreTermVectorPayloads(termVectorPayloads);
             return builder;
         }
 
-        protected T tokenized(boolean tokenized) {
+        public T tokenized(boolean tokenized) {
             this.fieldType.setTokenized(tokenized);
             return builder;
         }
 
-        protected T boost(float boost) {
+        public T boost(float boost) {
             this.boost = boost;
             return builder;
         }
 
-        protected T omitNorms(boolean omitNorms) {
+        public T omitNorms(boolean omitNorms) {
             this.fieldType.setOmitNorms(omitNorms);
             this.omitNormsSet = true;
             return builder;
         }
 
-        protected T indexOptions(IndexOptions indexOptions) {
+        public T indexOptions(IndexOptions indexOptions) {
             this.fieldType.setIndexOptions(indexOptions);
             this.indexOptionsSet = true;
             return builder;
         }
 
-        protected T indexName(String indexName) {
+        public T indexName(String indexName) {
             this.indexName = indexName;
             return builder;
         }
 
-        protected T indexAnalyzer(NamedAnalyzer indexAnalyzer) {
+        public T indexAnalyzer(NamedAnalyzer indexAnalyzer) {
             this.indexAnalyzer = indexAnalyzer;
             return builder;
         }
 
-        protected T searchAnalyzer(NamedAnalyzer searchAnalyzer) {
+        public T searchAnalyzer(NamedAnalyzer searchAnalyzer) {
             this.searchAnalyzer = searchAnalyzer;
             return builder;
         }
 
-        protected T includeInAll(Boolean includeInAll) {
+        public T includeInAll(Boolean includeInAll) {
             this.includeInAll = includeInAll;
             return builder;
         }
 
-        protected T postingsFormat(PostingsFormatProvider postingsFormat) {
-            this.provider = postingsFormat;
+        public T postingsFormat(PostingsFormatProvider postingsFormat) {
+            this.postingsProvider = postingsFormat;
             return builder;
         }
 
-        protected T similarity(SimilarityProvider similarity) {
+        public T docValuesFormat(DocValuesFormatProvider docValuesFormat) {
+            this.docValuesProvider = docValuesFormat;
+            return builder;
+        }
+
+        public T similarity(SimilarityProvider similarity) {
             this.similarity = similarity;
             return builder;
         }
 
-        protected T fieldDataSettings(String settings) {
-            this.fieldDataSettings = ImmutableSettings.builder().loadFromDelimitedString(settings, ';').build();
+        public T fieldDataSettings(Settings settings) {
+            this.fieldDataSettings = settings;
             return builder;
         }
 
-        protected Names buildNames(BuilderContext context) {
+        public Names buildNames(BuilderContext context) {
             return new Names(name, buildIndexName(context), indexName == null ? name : indexName, buildFullName(context), context.path().sourcePath());
         }
 
-        protected String buildIndexName(BuilderContext context) {
+        public String buildIndexName(BuilderContext context) {
             String actualIndexName = indexName == null ? name : indexName;
             return context.path().pathAsText(actualIndexName);
         }
 
-        protected String buildFullName(BuilderContext context) {
+        public String buildFullName(BuilderContext context) {
             return context.path().fullPathAsText(name);
         }
     }
 
+    private static final ThreadLocal<List<Field>> FIELD_LIST = new ThreadLocal<List<Field>>() {
+        protected List<Field> initialValue() {
+            return new ArrayList<Field>(2);
+        }
+    };
+
     protected final Names names;
     protected float boost;
     protected final FieldType fieldType;
+    private final boolean docValues;
     protected final NamedAnalyzer indexAnalyzer;
     protected NamedAnalyzer searchAnalyzer;
     protected PostingsFormatProvider postingsFormat;
+    protected DocValuesFormatProvider docValuesFormat;
     protected final SimilarityProvider similarity;
 
     protected Settings customFieldDataSettings;
     protected FieldDataType fieldDataType;
 
     protected AbstractFieldMapper(Names names, float boost, FieldType fieldType, NamedAnalyzer indexAnalyzer,
-                                  NamedAnalyzer searchAnalyzer, PostingsFormatProvider postingsFormat, SimilarityProvider similarity,
-                                  @Nullable Settings fieldDataSettings) {
+                                  NamedAnalyzer searchAnalyzer, PostingsFormatProvider postingsFormat,
+                                  DocValuesFormatProvider docValuesFormat, SimilarityProvider similarity,
+                                  @Nullable Settings fieldDataSettings, Settings indexSettings) {
         this.names = names;
         this.boost = boost;
         this.fieldType = fieldType;
@@ -311,6 +254,7 @@ public abstract class AbstractFieldMapper<T> implements FieldMapper<T>, Mapper {
             }
         }
         this.postingsFormat = postingsFormat;
+        this.docValuesFormat = docValuesFormat;
         this.similarity = similarity;
 
         this.customFieldDataSettings = fieldDataSettings;
@@ -322,10 +266,20 @@ public abstract class AbstractFieldMapper<T> implements FieldMapper<T>, Mapper {
                     ImmutableSettings.builder().put(defaultFieldDataType().getSettings()).put(fieldDataSettings)
             );
         }
+        if (fieldDataType == null) {
+            docValues = false;
+        } else {
+            this.docValues = FieldDataType.DOC_VALUES_FORMAT_VALUE.equals(fieldDataType.getFormat(indexSettings));
+        }
     }
 
     @Nullable
     protected String defaultPostingFormat() {
+        return null;
+    }
+
+    @Nullable
+    protected String defaultDocValuesFormat() {
         return null;
     }
 
@@ -380,27 +334,29 @@ public abstract class AbstractFieldMapper<T> implements FieldMapper<T>, Mapper {
 
     @Override
     public void parse(ParseContext context) throws IOException {
+        final List<Field> fields = FIELD_LIST.get();
+        assert fields.isEmpty();
         try {
-            Field field = parseCreateField(context);
-            if (field == null) {
-                return;
-            }
-            if (!customBoost()) {
-                field.setBoost(boost);
-            }
-            if (context.listener().beforeFieldAdded(this, field, context)) {
-                context.doc().add(field);
+            parseCreateField(context, fields);
+            for (Field field : fields) {
+                if (!customBoost()) {
+                    field.setBoost(boost);
+                }
+                if (context.listener().beforeFieldAdded(this, field, context)) {
+                    context.doc().add(field);
+                }
             }
         } catch (Exception e) {
             throw new MapperParsingException("failed to parse [" + names.fullName() + "]", e);
+        } finally {
+            fields.clear();
         }
     }
 
-    protected abstract Field parseCreateField(ParseContext context) throws IOException;
+    /** Parse the field value and populate <code>fields</code>. */
+    protected abstract void parseCreateField(ParseContext context, List<Field> fields) throws IOException;
 
-    /**
-     * Derived classes can override it to specify that boost value is set by derived classes.
-     */
+    /** Derived classes can override it to specify that boost value is set by derived classes. */
     protected boolean customBoost() {
         return false;
     }
@@ -446,12 +402,27 @@ public abstract class AbstractFieldMapper<T> implements FieldMapper<T>, Mapper {
     }
 
     @Override
-    public Filter termsFilter(List<Object> values, @Nullable QueryParseContext context) {
+    public Filter termsFilter(List values, @Nullable QueryParseContext context) {
         BytesRef[] bytesRefs = new BytesRef[values.size()];
         for (int i = 0; i < bytesRefs.length; i++) {
             bytesRefs[i] = indexedValueForSearch(values.get(i));
         }
-        return new XTermsFilter(names.indexName(), bytesRefs);
+        return new TermsFilter(names.indexName(), bytesRefs);
+    }
+
+    /**
+     * A terms filter based on the field data cache
+     */
+    @Override
+    public Filter termsFilter(IndexFieldDataService fieldDataService, List values, @Nullable QueryParseContext context) {
+        // create with initial size large enough to avoid rehashing
+        ObjectOpenHashSet<BytesRef> terms =
+                new ObjectOpenHashSet<BytesRef>((int) (values.size() * (1 + ObjectOpenHashSet.DEFAULT_LOAD_FACTOR)));
+        for (int i = 0, len = values.size(); i < len; i++) {
+            terms.add(indexedValueForSearch(values.get(i)));
+        }
+
+        return FieldDataTermsFilter.newBytes(fieldDataService.getForField(this), terms);
     }
 
     @Override
@@ -568,6 +539,9 @@ public abstract class AbstractFieldMapper<T> implements FieldMapper<T>, Mapper {
             if (fieldMergeWith.postingsFormat != null) {
                 this.postingsFormat = fieldMergeWith.postingsFormat;
             }
+            if (fieldMergeWith.docValuesFormat != null) {
+                this.docValuesFormat = fieldMergeWith.docValuesFormat;
+            }
             if (fieldMergeWith.searchAnalyzer != null) {
                 this.searchAnalyzer = fieldMergeWith.searchAnalyzer;
             }
@@ -577,7 +551,6 @@ public abstract class AbstractFieldMapper<T> implements FieldMapper<T>, Mapper {
                     this.fieldDataType = new FieldDataType(defaultFieldDataType().getType(),
                             ImmutableSettings.builder().put(defaultFieldDataType().getSettings()).put(this.customFieldDataSettings)
                     );
-                    mergeContext.addFieldDataChange(this);
                 }
             }
         }
@@ -589,73 +562,110 @@ public abstract class AbstractFieldMapper<T> implements FieldMapper<T>, Mapper {
     }
 
     @Override
-    public XContentBuilder toXContent(XContentBuilder builder, Params params) throws IOException {
-        builder.startObject(names.name());
-        doXContentBody(builder);
-        builder.endObject();
-        return builder;
+    public DocValuesFormatProvider docValuesFormatProvider() {
+        return docValuesFormat;
     }
 
-    protected void doXContentBody(XContentBuilder builder) throws IOException {
+    @Override
+    public XContentBuilder toXContent(XContentBuilder builder, Params params) throws IOException {
+        builder.startObject(names.name());
+        boolean includeDefaults = params.paramAsBoolean("include_defaults", false);
+        doXContentBody(builder, includeDefaults, params);
+        return builder.endObject();
+    }
+
+    protected void doXContentBody(XContentBuilder builder, boolean includeDefaults, Params params) throws IOException {
+
         builder.field("type", contentType());
-        if (!names.name().equals(names.indexNameClean())) {
+        if (includeDefaults || !names.name().equals(names.indexNameClean())) {
             builder.field("index_name", names.indexNameClean());
         }
 
-        if (boost != 1.0f) {
+        if (includeDefaults || boost != 1.0f) {
             builder.field("boost", boost);
         }
 
         FieldType defaultFieldType = defaultFieldType();
-        if (fieldType.indexed() != defaultFieldType.indexed() ||
+        if (includeDefaults || fieldType.indexed() != defaultFieldType.indexed() ||
                 fieldType.tokenized() != defaultFieldType.tokenized()) {
             builder.field("index", indexTokenizeOptionToString(fieldType.indexed(), fieldType.tokenized()));
         }
-        if (fieldType.stored() != defaultFieldType.stored()) {
+        if (includeDefaults || fieldType.stored() != defaultFieldType.stored()) {
             builder.field("store", fieldType.stored());
         }
-        if (fieldType.storeTermVectors() != defaultFieldType.storeTermVectors()) {
-            builder.field("store_term_vector", fieldType.storeTermVectors());
+        if (includeDefaults || fieldType.storeTermVectors() != defaultFieldType.storeTermVectors()) {
+            builder.field("term_vector", termVectorOptionsToString(fieldType));
         }
-        if (fieldType.storeTermVectorOffsets() != defaultFieldType.storeTermVectorOffsets()) {
-            builder.field("store_term_vector_offsets", fieldType.storeTermVectorOffsets());
-        }
-        if (fieldType.storeTermVectorPositions() != defaultFieldType.storeTermVectorPositions()) {
-            builder.field("store_term_vector_positions", fieldType.storeTermVectorPositions());
-        }
-        if (fieldType.storeTermVectorPayloads() != defaultFieldType.storeTermVectorPayloads()) {
-            builder.field("store_term_vector_payloads", fieldType.storeTermVectorPayloads());
-        }
-        if (fieldType.omitNorms() != defaultFieldType.omitNorms()) {
+        if (includeDefaults || fieldType.omitNorms() != defaultFieldType.omitNorms()) {
             builder.field("omit_norms", fieldType.omitNorms());
         }
-        if (fieldType.indexOptions() != defaultFieldType.indexOptions()) {
+        if (includeDefaults || fieldType.indexOptions() != defaultFieldType.indexOptions()) {
             builder.field("index_options", indexOptionToString(fieldType.indexOptions()));
         }
 
-        if (indexAnalyzer != null && searchAnalyzer != null && indexAnalyzer.name().equals(searchAnalyzer.name()) && !indexAnalyzer.name().startsWith("_") && !indexAnalyzer.name().equals("default")) {
-            // same analyzers, output it once
-            builder.field("analyzer", indexAnalyzer.name());
-        } else {
-            if (indexAnalyzer != null && !indexAnalyzer.name().startsWith("_") && !indexAnalyzer.name().equals("default")) {
+        if (indexAnalyzer == null && searchAnalyzer == null) {
+            if (includeDefaults) {
+                builder.field("analyzer", "default");
+            }
+        } else if (indexAnalyzer == null) {
+            // searchAnalyzer != null
+            if (includeDefaults || (!searchAnalyzer.name().startsWith("_") && !searchAnalyzer.name().equals("default"))) {
+                builder.field("search_analyzer", searchAnalyzer.name());
+            }
+        } else if (searchAnalyzer == null) {
+            // indexAnalyzer != null
+            if (includeDefaults || (!indexAnalyzer.name().startsWith("_") && !indexAnalyzer.name().equals("default"))) {
                 builder.field("index_analyzer", indexAnalyzer.name());
             }
-            if (searchAnalyzer != null && !searchAnalyzer.name().startsWith("_") && !searchAnalyzer.name().equals("default")) {
+        } else if (indexAnalyzer.name().equals(searchAnalyzer.name())) {
+            // indexAnalyzer == searchAnalyzer
+            if (includeDefaults || (!indexAnalyzer.name().startsWith("_") && !indexAnalyzer.name().equals("default"))) {
+                builder.field("analyzer", indexAnalyzer.name());
+            }
+        } else {
+            // both are there but different
+            if (includeDefaults || (!indexAnalyzer.name().startsWith("_") && !indexAnalyzer.name().equals("default"))) {
+                builder.field("index_analyzer", indexAnalyzer.name());
+            }
+            if (includeDefaults || (!searchAnalyzer.name().startsWith("_") && !searchAnalyzer.name().equals("default"))) {
                 builder.field("search_analyzer", searchAnalyzer.name());
             }
         }
+
         if (postingsFormat != null) {
-            if (!postingsFormat.name().equals(defaultPostingFormat())) {
+            if (includeDefaults || !postingsFormat.name().equals(defaultPostingFormat())) {
                 builder.field("postings_format", postingsFormat.name());
             }
+        } else if (includeDefaults) {
+            String format = defaultPostingFormat();
+            if (format == null) {
+                format = PostingsFormatService.DEFAULT_FORMAT;
+            }
+            builder.field("postings_format", format);
+        }
+
+        if (docValuesFormat != null) {
+            if (includeDefaults || !docValuesFormat.name().equals(defaultDocValuesFormat())) {
+                builder.field(DOC_VALUES_FORMAT, docValuesFormat.name());
+            }
+        } else if (includeDefaults) {
+            String format = defaultDocValuesFormat();
+            if (format == null) {
+                format = DocValuesFormatService.DEFAULT_FORMAT;
+            }
+            builder.field(DOC_VALUES_FORMAT, format);
         }
 
         if (similarity() != null) {
             builder.field("similarity", similarity().name());
+        } else if (includeDefaults) {
+            builder.field("similariry", SimilarityLookupService.DEFAULT_SIMILARITY);
         }
 
         if (customFieldDataSettings != null) {
-            builder.field("fielddata", customFieldDataSettings.toDelimitedString(';'));
+            builder.field("fielddata", (Map) customFieldDataSettings.getAsMap());
+        } else if (includeDefaults) {
+            builder.field("fielddata", (Map) fieldDataType.getSettings().getAsMap());
         }
     }
 
@@ -671,6 +681,28 @@ public abstract class AbstractFieldMapper<T> implements FieldMapper<T>, Mapper {
                 return TypeParsers.INDEX_OPTIONS_DOCS;
             default:
                 throw new ElasticSearchIllegalArgumentException("Unknown IndexOptions [" + indexOption + "]");
+        }
+    }
+
+    public static String termVectorOptionsToString(FieldType fieldType) {
+        if (!fieldType.storeTermVectors()) {
+            return "no";
+        } else if (!fieldType.storeTermVectorOffsets() && !fieldType.storeTermVectorPositions()) {
+            return "yes";
+        } else if (fieldType.storeTermVectorOffsets() && !fieldType.storeTermVectorPositions()) {
+            return "with_offsets";
+        } else {
+            StringBuilder builder = new StringBuilder("with");
+            if (fieldType.storeTermVectorPositions()) {
+                builder.append("_positions");
+            }
+            if (fieldType.storeTermVectorOffsets()) {
+                builder.append("_offsets");
+            }
+            if (fieldType.storeTermVectorPayloads()) {
+                builder.append("_payloads");
+            }
+            return builder.toString();
         }
     }
 
@@ -690,6 +722,20 @@ public abstract class AbstractFieldMapper<T> implements FieldMapper<T>, Mapper {
     @Override
     public void close() {
         // nothing to do here, sub classes to override if needed
+    }
+
+    @Override
+    public boolean isNumeric() {
+        return false;
+    }
+
+    @Override
+    public boolean isSortable() {
+        return true;
+    }
+
+    public boolean hasDocValues() {
+        return docValues;
     }
 
 }

@@ -36,7 +36,9 @@ public class HasChildQueryBuilder extends BaseQueryBuilder implements BoostableQ
 
     private String scoreType;
 
-    private String executionType;
+    private Integer shortCircuitCutoff;
+
+    private String queryName;
 
     public HasChildQueryBuilder(String type, QueryBuilder queryBuilder) {
         this.childType = type;
@@ -61,13 +63,19 @@ public class HasChildQueryBuilder extends BaseQueryBuilder implements BoostableQ
     }
 
     /**
-     * Expert: Sets the low level child to parent filtering implementation. Can be: 'bitset' or 'uid'
-     * Only applicable when score_type is set to none.
-     * <p/>
-     * This option is experimental and will be removed.
+     * Configures at what cut off point only to evaluate parent documents that contain the matching parent id terms
+     * instead of evaluating all parent docs.
      */
-    public HasChildQueryBuilder executionType(String executionType) {
-        this.executionType = executionType;
+    public HasChildQueryBuilder setShortCircuitCutoff(int shortCircuitCutoff) {
+        this.shortCircuitCutoff = shortCircuitCutoff;
+        return this;
+    }
+
+    /**
+     * Sets the query name for the filter that can be used when searching for matched_filters per hit.
+     */
+    public HasChildQueryBuilder queryName(String queryName) {
+        this.queryName = queryName;
         return this;
     }
 
@@ -83,8 +91,11 @@ public class HasChildQueryBuilder extends BaseQueryBuilder implements BoostableQ
         if (scoreType != null) {
             builder.field("score_type", scoreType);
         }
-        if (executionType != null) {
-            builder.field("execution_type", executionType);
+        if (shortCircuitCutoff != null) {
+            builder.field("short_circuit_cutoff", shortCircuitCutoff);
+        }
+        if (queryName != null) {
+            builder.field("_name", queryName);
         }
         builder.endObject();
     }

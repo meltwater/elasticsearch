@@ -25,7 +25,9 @@ import org.apache.lucene.search.Filter;
 import org.apache.lucene.util.Bits;
 import org.apache.lucene.util.NumericUtils;
 import org.elasticsearch.common.lucene.docset.MatchDocIdSet;
-import org.elasticsearch.index.fielddata.*;
+import org.elasticsearch.index.fielddata.DoubleValues;
+import org.elasticsearch.index.fielddata.IndexNumericFieldData;
+import org.elasticsearch.index.fielddata.LongValues;
 
 import java.io.IOException;
 
@@ -131,26 +133,8 @@ public abstract class NumericRangeFieldDataFilter<T> extends Filter {
                 if (inclusiveLowerPoint > inclusiveUpperPoint)
                     return null;
 
-                final ByteValues values = indexFieldData.load(ctx).getByteValues();
-                return new MatchDocIdSet(ctx.reader().maxDoc(), acceptedDocs) {
-
-                    @Override
-                    public boolean isCacheable() {
-                        return true;
-                    }
-
-                    @Override
-                    protected boolean matchDoc(int doc) {
-                        ByteValues.Iter iter = values.getIter(doc);
-                        while (iter.hasNext()) {
-                            byte value = iter.next();
-                            if (value >= inclusiveLowerPoint && value <= inclusiveUpperPoint) {
-                                return true;
-                            }
-                        }
-                        return false;
-                    }
-                };
+                final LongValues values = indexFieldData.load(ctx).getLongValues();
+                return new LongRangeMatchDocIdSet(ctx.reader().maxDoc(), acceptedDocs, values, inclusiveLowerPoint, inclusiveUpperPoint);
             }
         };
     }
@@ -181,26 +165,8 @@ public abstract class NumericRangeFieldDataFilter<T> extends Filter {
                 if (inclusiveLowerPoint > inclusiveUpperPoint)
                     return null;
 
-                final ShortValues values = indexFieldData.load(ctx).getShortValues();
-                return new MatchDocIdSet(ctx.reader().maxDoc(), acceptedDocs) {
-
-                    @Override
-                    public boolean isCacheable() {
-                        return true;
-                    }
-
-                    @Override
-                    protected boolean matchDoc(int doc) {
-                        ShortValues.Iter iter = values.getIter(doc);
-                        while (iter.hasNext()) {
-                            short value = iter.next();
-                            if (value >= inclusiveLowerPoint && value <= inclusiveUpperPoint) {
-                                return true;
-                            }
-                        }
-                        return false;
-                    }
-                };
+                final LongValues values = indexFieldData.load(ctx).getLongValues();
+                return new LongRangeMatchDocIdSet(ctx.reader().maxDoc(), acceptedDocs, values, inclusiveLowerPoint, inclusiveUpperPoint);
             }
         };
     }
@@ -230,26 +196,8 @@ public abstract class NumericRangeFieldDataFilter<T> extends Filter {
                 if (inclusiveLowerPoint > inclusiveUpperPoint)
                     return null;
 
-                final IntValues values = indexFieldData.load(ctx).getIntValues();
-                return new MatchDocIdSet(ctx.reader().maxDoc(), acceptedDocs) {
-
-                    @Override
-                    public boolean isCacheable() {
-                        return true;
-                    }
-
-                    @Override
-                    protected boolean matchDoc(int doc) {
-                        IntValues.Iter iter = values.getIter(doc);
-                        while (iter.hasNext()) {
-                            int value = iter.next();
-                            if (value >= inclusiveLowerPoint && value <= inclusiveUpperPoint) {
-                                return true;
-                            }
-                        }
-                        return false;
-                    }
-                };
+                final LongValues values = indexFieldData.load(ctx).getLongValues();
+                return new LongRangeMatchDocIdSet(ctx.reader().maxDoc(), acceptedDocs, values, inclusiveLowerPoint, inclusiveUpperPoint);
             }
         };
     }
@@ -280,25 +228,8 @@ public abstract class NumericRangeFieldDataFilter<T> extends Filter {
                     return null;
 
                 final LongValues values = indexFieldData.load(ctx).getLongValues();
-                return new MatchDocIdSet(ctx.reader().maxDoc(), acceptedDocs) {
+                return new LongRangeMatchDocIdSet(ctx.reader().maxDoc(), acceptedDocs, values, inclusiveLowerPoint, inclusiveUpperPoint);
 
-                    @Override
-                    public boolean isCacheable() {
-                        return true;
-                    }
-
-                    @Override
-                    protected boolean matchDoc(int doc) {
-                        LongValues.Iter iter = values.getIter(doc);
-                        while (iter.hasNext()) {
-                            long value = iter.next();
-                            if (value >= inclusiveLowerPoint && value <= inclusiveUpperPoint) {
-                                return true;
-                            }
-                        }
-                        return false;
-                    }
-                };
             }
         };
     }
@@ -332,26 +263,8 @@ public abstract class NumericRangeFieldDataFilter<T> extends Filter {
                 if (inclusiveLowerPoint > inclusiveUpperPoint)
                     return null;
 
-                final FloatValues values = indexFieldData.load(ctx).getFloatValues();
-                return new MatchDocIdSet(ctx.reader().maxDoc(), acceptedDocs) {
-
-                    @Override
-                    public boolean isCacheable() {
-                        return true;
-                    }
-
-                    @Override
-                    protected boolean matchDoc(int doc) {
-                        FloatValues.Iter iter = values.getIter(doc);
-                        while (iter.hasNext()) {
-                            float value = iter.next();
-                            if (value >= inclusiveLowerPoint && value <= inclusiveUpperPoint) {
-                                return true;
-                            }
-                        }
-                        return false;
-                    }
-                };
+                final DoubleValues values = indexFieldData.load(ctx).getDoubleValues();
+                return new DoubleRangeMatchDocIdSet(ctx.reader().maxDoc(), acceptedDocs, values, inclusiveLowerPoint, inclusiveUpperPoint);
             }
         };
     }
@@ -386,26 +299,71 @@ public abstract class NumericRangeFieldDataFilter<T> extends Filter {
                     return null;
 
                 final DoubleValues values = indexFieldData.load(ctx).getDoubleValues();
-                return new MatchDocIdSet(ctx.reader().maxDoc(), acceptedDocs) {
-
-                    @Override
-                    public boolean isCacheable() {
-                        return true;
-                    }
-
-                    @Override
-                    protected boolean matchDoc(int doc) {
-                        DoubleValues.Iter iter = values.getIter(doc);
-                        while (iter.hasNext()) {
-                            double value = iter.next();
-                            if (value >= inclusiveLowerPoint && value <= inclusiveUpperPoint) {
-                                return true;
-                            }
-                        }
-                        return false;
-                    }
-                };
+                return new DoubleRangeMatchDocIdSet(ctx.reader().maxDoc(), acceptedDocs, values, inclusiveLowerPoint, inclusiveUpperPoint);
             }
         };
     }
+    
+    private static final class DoubleRangeMatchDocIdSet extends MatchDocIdSet {
+        private final DoubleValues values;
+        private final double inclusiveLowerPoint;
+        private final double inclusiveUpperPoint;
+
+        protected DoubleRangeMatchDocIdSet(int maxDoc, Bits acceptDocs, final DoubleValues values,final double inclusiveLowerPoint, final double inclusiveUpperPoint ) {
+            super(maxDoc, acceptDocs);
+            this.inclusiveLowerPoint = inclusiveLowerPoint;
+            this.inclusiveUpperPoint = inclusiveUpperPoint; 
+            this.values = values;
+        }
+        
+        @Override
+        public boolean isCacheable() {
+            return true;
+        }
+
+        @Override
+        protected boolean matchDoc(int doc) {
+            int numValues = values.setDocument(doc);
+            for (int i = 0; i < numValues; i++) {
+                double value = values.nextValue();
+                if (value >= inclusiveLowerPoint && value <= inclusiveUpperPoint) {
+                    return true;
+                }
+            }
+            return false;
+        }
+        
+    }
+    
+    private static final class LongRangeMatchDocIdSet extends MatchDocIdSet {
+        private final LongValues values;
+        private final long inclusiveLowerPoint;
+        private final long inclusiveUpperPoint;
+
+        protected LongRangeMatchDocIdSet(int maxDoc, Bits acceptDocs, final LongValues values,final long inclusiveLowerPoint, final long inclusiveUpperPoint ) {
+            super(maxDoc, acceptDocs);
+            this.inclusiveLowerPoint = inclusiveLowerPoint;
+            this.inclusiveUpperPoint = inclusiveUpperPoint; 
+            this.values = values;
+        }
+        
+        @Override
+        public boolean isCacheable() {
+            return true;
+        }
+
+        @Override
+        protected boolean matchDoc(int doc) {
+            int numValues = values.setDocument(doc);
+            for (int i = 0; i < numValues; i++) {
+                long value = values.nextValue();
+                if (value >= inclusiveLowerPoint && value <= inclusiveUpperPoint) {
+                    return true;
+                }
+            }
+            return false;
+        }
+        
+    }
+
 }

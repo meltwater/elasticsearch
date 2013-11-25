@@ -22,11 +22,11 @@ package org.elasticsearch.action.admin.indices.alias;
 import com.google.common.collect.Lists;
 import org.elasticsearch.ElasticSearchGenerationException;
 import org.elasticsearch.action.ActionRequestValidationException;
-import org.elasticsearch.action.support.master.MasterNodeOperationRequest;
+import org.elasticsearch.action.support.master.AcknowledgedRequest;
 import org.elasticsearch.cluster.metadata.AliasAction;
+import org.elasticsearch.common.Strings;
 import org.elasticsearch.common.io.stream.StreamInput;
 import org.elasticsearch.common.io.stream.StreamOutput;
-import org.elasticsearch.common.unit.TimeValue;
 import org.elasticsearch.common.xcontent.ToXContent;
 import org.elasticsearch.common.xcontent.XContentBuilder;
 import org.elasticsearch.common.xcontent.XContentFactory;
@@ -35,20 +35,18 @@ import org.elasticsearch.index.query.FilterBuilder;
 
 import java.io.IOException;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 
 import static org.elasticsearch.action.ValidateActions.addValidationError;
 import static org.elasticsearch.cluster.metadata.AliasAction.readAliasAction;
-import static org.elasticsearch.common.unit.TimeValue.readTimeValue;
 
 /**
  * A request to add/remove aliases for one or more indices.
  */
-public class IndicesAliasesRequest extends MasterNodeOperationRequest<IndicesAliasesRequest> {
+public class IndicesAliasesRequest extends AcknowledgedRequest<IndicesAliasesRequest> {
 
     private List<AliasAction> aliasActions = Lists.newArrayList();
-
-    private TimeValue timeout = TimeValue.timeValueSeconds(10);
 
     public IndicesAliasesRequest() {
 
@@ -141,36 +139,23 @@ public class IndicesAliasesRequest extends MasterNodeOperationRequest<IndicesAli
         return this.aliasActions;
     }
 
-    /**
-     * Timeout to wait till the put mapping gets acknowledged of all current cluster nodes. Defaults to
-     * <tt>10s</tt>.
-     */
-    TimeValue timeout() {
-        return timeout;
-    }
-
-    /**
-     * Timeout to wait till the alias operations get acknowledged of all current cluster nodes. Defaults to
-     * <tt>10s</tt>.
-     */
-    public IndicesAliasesRequest timeout(TimeValue timeout) {
-        this.timeout = timeout;
-        return this;
-    }
-
-    /**
-     * Timeout to wait till the alias operations get acknowledged of all current cluster nodes. Defaults to
-     * <tt>10s</tt>.
-     */
-    public IndicesAliasesRequest timeout(String timeout) {
-        return timeout(TimeValue.parseTimeValue(timeout, TimeValue.timeValueSeconds(10)));
+    public List<AliasAction> getAliasActions() {
+        return aliasActions();
     }
 
     @Override
     public ActionRequestValidationException validate() {
         ActionRequestValidationException validationException = null;
         if (aliasActions.isEmpty()) {
-            validationException = addValidationError("Must specify at least one alias action", validationException);
+            return addValidationError("Must specify at least one alias action", validationException);
+        }
+        for (AliasAction aliasAction : aliasActions) {
+            if (!Strings.hasText(aliasAction.alias())) {
+                validationException = addValidationError("Alias action [" + aliasAction.actionType().name().toLowerCase(Locale.ENGLISH) + "] requires an [alias] to be set", validationException);
+            }
+            if (!Strings.hasText(aliasAction.index())) {
+                validationException = addValidationError("Alias action [" + aliasAction.actionType().name().toLowerCase(Locale.ENGLISH) + "] requires an [index] to be set", validationException);
+            }
         }
         return validationException;
     }
@@ -182,7 +167,7 @@ public class IndicesAliasesRequest extends MasterNodeOperationRequest<IndicesAli
         for (int i = 0; i < size; i++) {
             aliasActions.add(readAliasAction(in));
         }
-        timeout = readTimeValue(in);
+        readTimeout(in);
     }
 
     @Override
@@ -192,6 +177,6 @@ public class IndicesAliasesRequest extends MasterNodeOperationRequest<IndicesAli
         for (AliasAction aliasAction : aliasActions) {
             aliasAction.writeTo(out);
         }
-        timeout.writeTo(out);
+        writeTimeout(out);
     }
 }

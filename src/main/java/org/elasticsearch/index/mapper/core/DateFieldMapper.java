@@ -41,16 +41,20 @@ import org.elasticsearch.common.xcontent.XContentBuilder;
 import org.elasticsearch.common.xcontent.XContentParser;
 import org.elasticsearch.index.analysis.NamedAnalyzer;
 import org.elasticsearch.index.analysis.NumericDateAnalyzer;
+import org.elasticsearch.index.codec.docvaluesformat.DocValuesFormatProvider;
 import org.elasticsearch.index.codec.postingsformat.PostingsFormatProvider;
 import org.elasticsearch.index.fielddata.FieldDataType;
 import org.elasticsearch.index.fielddata.IndexFieldDataService;
 import org.elasticsearch.index.fielddata.IndexNumericFieldData;
 import org.elasticsearch.index.mapper.*;
+import org.elasticsearch.index.mapper.core.LongFieldMapper.CustomLongNumericField;
 import org.elasticsearch.index.query.QueryParseContext;
 import org.elasticsearch.index.search.NumericRangeFieldDataFilter;
 import org.elasticsearch.index.similarity.SimilarityProvider;
 
 import java.io.IOException;
+import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.concurrent.TimeUnit;
 
@@ -66,7 +70,7 @@ public class DateFieldMapper extends NumberFieldMapper<Long> {
     public static final String CONTENT_TYPE = "date";
 
     public static class Defaults extends NumberFieldMapper.Defaults {
-        public static final FormatDateTimeFormatter DATE_TIME_FORMATTER = Joda.forPattern("dateOptionalTime");
+        public static final FormatDateTimeFormatter DATE_TIME_FORMATTER = Joda.forPattern("dateOptionalTime", Locale.ROOT);
 
         public static final FieldType FIELD_TYPE = new FieldType(NumberFieldMapper.Defaults.FIELD_TYPE);
 
@@ -77,7 +81,7 @@ public class DateFieldMapper extends NumberFieldMapper<Long> {
         public static final String NULL_VALUE = null;
 
         public static final TimeUnit TIME_UNIT = TimeUnit.MILLISECONDS;
-        public static final boolean PARSE_UPPER_INCLUSIVE = true;
+        public static final boolean ROUND_CEIL = true;
     }
 
     public static class Builder extends NumberFieldMapper.Builder<Builder, DateFieldMapper> {
@@ -88,9 +92,13 @@ public class DateFieldMapper extends NumberFieldMapper<Long> {
 
         protected FormatDateTimeFormatter dateTimeFormatter = Defaults.DATE_TIME_FORMATTER;
 
+        private Locale locale;
+
         public Builder(String name) {
             super(name, new FieldType(Defaults.FIELD_TYPE));
             builder = this;
+            // do *NOT* rely on the default locale
+            locale = Locale.ROOT;
         }
 
         public Builder timeUnit(TimeUnit timeUnit) {
@@ -110,22 +118,31 @@ public class DateFieldMapper extends NumberFieldMapper<Long> {
 
         @Override
         public DateFieldMapper build(BuilderContext context) {
-            boolean parseUpperInclusive = Defaults.PARSE_UPPER_INCLUSIVE;
+            boolean roundCeil = Defaults.ROUND_CEIL;
             if (context.indexSettings() != null) {
-                parseUpperInclusive = context.indexSettings().getAsBoolean("index.mapping.date.parse_upper_inclusive", Defaults.PARSE_UPPER_INCLUSIVE);
+                Settings settings = context.indexSettings();
+                roundCeil =  settings.getAsBoolean("index.mapping.date.round_ceil", settings.getAsBoolean("index.mapping.date.parse_upper_inclusive", Defaults.ROUND_CEIL));
             }
             fieldType.setOmitNorms(fieldType.omitNorms() && boost == 1.0f);
+            if (!locale.equals(dateTimeFormatter.locale())) {
+                dateTimeFormatter = new FormatDateTimeFormatter(dateTimeFormatter.format(), dateTimeFormatter.parser(), dateTimeFormatter.printer(), locale);
+            }
             DateFieldMapper fieldMapper = new DateFieldMapper(buildNames(context), dateTimeFormatter,
-                    precisionStep, boost, fieldType, nullValue,
-                    timeUnit, parseUpperInclusive, ignoreMalformed(context), provider, similarity, fieldDataSettings);
+                    precisionStep, boost, fieldType, nullValue, timeUnit, roundCeil, ignoreMalformed(context),
+                    postingsProvider, docValuesProvider, similarity, fieldDataSettings, context.indexSettings());
             fieldMapper.includeInAll(includeInAll);
             return fieldMapper;
+        }
+
+        public Builder locale(Locale locale) {
+            this.locale = locale;
+            return this;
         }
     }
 
     public static class TypeParser implements Mapper.TypeParser {
         @Override
-        public Mapper.Builder parse(String name, Map<String, Object> node, ParserContext parserContext) throws MapperParsingException {
+        public Mapper.Builder<?, ?> parse(String name, Map<String, Object> node, ParserContext parserContext) throws MapperParsingException {
             DateFieldMapper.Builder builder = dateField(name);
             parseNumberField(builder, name, node, parserContext);
             for (Map.Entry<String, Object> entry : node.entrySet()) {
@@ -136,16 +153,46 @@ public class DateFieldMapper extends NumberFieldMapper<Long> {
                 } else if (propName.equals("format")) {
                     builder.dateTimeFormatter(parseDateTimeFormatter(propName, propNode));
                 } else if (propName.equals("numeric_resolution")) {
-                    builder.timeUnit(TimeUnit.valueOf(propNode.toString().toUpperCase()));
+                    builder.timeUnit(TimeUnit.valueOf(propNode.toString().toUpperCase(Locale.ROOT)));
+                } else if (propName.equals("locale")) {
+                    builder.locale(parseLocale(propNode.toString()));
                 }
             }
             return builder;
         }
     }
 
-    protected final FormatDateTimeFormatter dateTimeFormatter;
+    // public for test
+    public static Locale parseLocale(String locale) {
+        final String[] parts = locale.split("_", -1);
+        switch (parts.length) {
+            case 3:
+                // lang_country_variant
+                return new Locale(parts[0], parts[1], parts[2]);
+            case 2:
+                // lang_country
+                return new Locale(parts[0], parts[1]);
+            case 1:
+                if ("ROOT".equalsIgnoreCase(parts[0])) {
+                    return Locale.ROOT;
+                }
+                // lang
+                return new Locale(parts[0]);
+            default:
+                throw new ElasticSearchIllegalArgumentException("Can't parse locale: [" + locale + "]");
+        }
+    }
 
-    private final boolean parseUpperInclusive;
+    protected FormatDateTimeFormatter dateTimeFormatter;
+
+    // Triggers rounding up of the upper bound for range queries and filters if
+    // set to true.
+    // Rounding up a date here has the following meaning: If a date is not
+    // defined with full precision, for example, no milliseconds given, the date
+    // will be filled up to the next larger date with that precision.
+    // Example: An upper bound given as "2000-01-01", will be converted to
+    // "2000-01-01T23.59.59.999"
+    private final boolean roundCeil;
 
     private final DateMathParser dateMathParser;
 
@@ -154,18 +201,26 @@ public class DateFieldMapper extends NumberFieldMapper<Long> {
     protected final TimeUnit timeUnit;
 
     protected DateFieldMapper(Names names, FormatDateTimeFormatter dateTimeFormatter, int precisionStep, float boost, FieldType fieldType,
-                              String nullValue, TimeUnit timeUnit, boolean parseUpperInclusive, Explicit<Boolean> ignoreMalformed,
-                              PostingsFormatProvider provider, SimilarityProvider similarity, @Nullable Settings fieldDataSettings) {
-        super(names, precisionStep, boost, fieldType,
-                ignoreMalformed, new NamedAnalyzer("_date/" + precisionStep,
+                              String nullValue, TimeUnit timeUnit, boolean roundCeil, Explicit<Boolean> ignoreMalformed,
+                              PostingsFormatProvider postingsProvider, DocValuesFormatProvider docValuesProvider, SimilarityProvider similarity,
+                              @Nullable Settings fieldDataSettings, Settings indexSettings) {
+        super(names, precisionStep, boost, fieldType, ignoreMalformed, new NamedAnalyzer("_date/" + precisionStep,
                 new NumericDateAnalyzer(precisionStep, dateTimeFormatter.parser())),
                 new NamedAnalyzer("_date/max", new NumericDateAnalyzer(Integer.MAX_VALUE, dateTimeFormatter.parser())),
-                provider, similarity, fieldDataSettings);
+                postingsProvider, docValuesProvider, similarity, fieldDataSettings, indexSettings);
         this.dateTimeFormatter = dateTimeFormatter;
         this.nullValue = nullValue;
         this.timeUnit = timeUnit;
-        this.parseUpperInclusive = parseUpperInclusive;
+        this.roundCeil = roundCeil;
         this.dateMathParser = new DateMathParser(dateTimeFormatter, timeUnit);
+    }
+
+    public FormatDateTimeFormatter dateTimeFormatter() {
+        return dateTimeFormatter;
+    }
+
+    public DateMathParser dateMathParser() {
+        return dateMathParser;
     }
 
     @Override
@@ -197,9 +252,7 @@ public class DateFieldMapper extends NumberFieldMapper<Long> {
         return parseStringValue(value.toString());
     }
 
-    /**
-     * Dates should return as a string.
-     */
+    /** Dates should return as a string. */
     @Override
     public Object valueForSearch(Object value) {
         if (value instanceof String) {
@@ -216,7 +269,7 @@ public class DateFieldMapper extends NumberFieldMapper<Long> {
     @Override
     public BytesRef indexedValueForSearch(Object value) {
         BytesRef bytesRef = new BytesRef();
-        NumericUtils.longToPrefixCoded(parseValue(value), precisionStep(), bytesRef);
+        NumericUtils.longToPrefixCoded(parseValue(value), 0, bytesRef); // 0 because of exact match
         return bytesRef;
     }
 
@@ -255,44 +308,48 @@ public class DateFieldMapper extends NumberFieldMapper<Long> {
 
     @Override
     public Query termQuery(Object value, @Nullable QueryParseContext context) {
-        long now = context == null ? System.currentTimeMillis() : context.nowInMillis();
-        long lValue = dateMathParser.parse(convertToString(value), now);
+        long lValue = parseToMilliseconds(value, context);
         return NumericRangeQuery.newLongRange(names.indexName(), precisionStep,
                 lValue, lValue, true, true);
     }
 
+    public long parseToMilliseconds(Object value, @Nullable QueryParseContext context) {
+        return parseToMilliseconds(value, context, false);
+    }
+
+    public long parseToMilliseconds(Object value, @Nullable QueryParseContext context, boolean includeUpper) {
+        long now = context == null ? System.currentTimeMillis() : context.nowInMillis();
+        return includeUpper && roundCeil ? dateMathParser.parseRoundCeil(convertToString(value), now) : dateMathParser.parse(convertToString(value), now);
+    }
+
     @Override
     public Filter termFilter(Object value, @Nullable QueryParseContext context) {
-        long now = context == null ? System.currentTimeMillis() : context.nowInMillis();
-        long lValue = dateMathParser.parse(convertToString(value), now);
+        final long lValue = parseToMilliseconds(value, context);
         return NumericRangeFilter.newLongRange(names.indexName(), precisionStep,
                 lValue, lValue, true, true);
     }
 
     @Override
     public Query rangeQuery(Object lowerTerm, Object upperTerm, boolean includeLower, boolean includeUpper, @Nullable QueryParseContext context) {
-        long now = context == null ? System.currentTimeMillis() : context.nowInMillis();
         return NumericRangeQuery.newLongRange(names.indexName(), precisionStep,
-                lowerTerm == null ? null : dateMathParser.parse(convertToString(lowerTerm), now),
-                upperTerm == null ? null : (includeUpper && parseUpperInclusive) ? dateMathParser.parseUpperInclusive(convertToString(upperTerm), now) : dateMathParser.parse(convertToString(upperTerm), now),
+                lowerTerm == null ? null : parseToMilliseconds(lowerTerm, context),
+                upperTerm == null ? null : parseToMilliseconds(upperTerm, context, includeUpper),
                 includeLower, includeUpper);
     }
 
     @Override
     public Filter rangeFilter(Object lowerTerm, Object upperTerm, boolean includeLower, boolean includeUpper, @Nullable QueryParseContext context) {
-        long now = context == null ? System.currentTimeMillis() : context.nowInMillis();
         return NumericRangeFilter.newLongRange(names.indexName(), precisionStep,
-                lowerTerm == null ? null : dateMathParser.parse(convertToString(lowerTerm), now),
-                upperTerm == null ? null : (includeUpper && parseUpperInclusive) ? dateMathParser.parseUpperInclusive(convertToString(upperTerm), now) : dateMathParser.parse(convertToString(upperTerm), now),
+                lowerTerm == null ? null : parseToMilliseconds(lowerTerm, context),
+                upperTerm == null ? null : parseToMilliseconds(upperTerm, context, includeUpper),
                 includeLower, includeUpper);
     }
 
     @Override
     public Filter rangeFilter(IndexFieldDataService fieldData, Object lowerTerm, Object upperTerm, boolean includeLower, boolean includeUpper, @Nullable QueryParseContext context) {
-        long now = context == null ? System.currentTimeMillis() : context.nowInMillis();
-        return NumericRangeFieldDataFilter.newLongRange((IndexNumericFieldData) fieldData.getForField(this),
-                lowerTerm == null ? null : dateMathParser.parse(convertToString(lowerTerm), now),
-                upperTerm == null ? null : (includeUpper && parseUpperInclusive) ? dateMathParser.parseUpperInclusive(convertToString(upperTerm), now) : dateMathParser.parse(convertToString(upperTerm), now),
+        return NumericRangeFieldDataFilter.newLongRange((IndexNumericFieldData<?>) fieldData.getForField(this),
+                lowerTerm == null ? null : parseToMilliseconds(lowerTerm, context),
+                upperTerm == null ? null : parseToMilliseconds(upperTerm, context, includeUpper),
                 includeLower, includeUpper);
     }
 
@@ -315,7 +372,7 @@ public class DateFieldMapper extends NumberFieldMapper<Long> {
     }
 
     @Override
-    protected Field innerParseCreateField(ParseContext context) throws IOException {
+    protected void innerParseCreateField(ParseContext context, List<Field> fields) throws IOException {
         String dateAsString = null;
         Long value = null;
         float boost = this.boost;
@@ -362,23 +419,24 @@ public class DateFieldMapper extends NumberFieldMapper<Long> {
             }
         }
 
+        if (dateAsString != null) {
+            assert value == null;
+            if (context.includeInAll(includeInAll, this)) {
+                context.allEntries().addText(names.fullName(), dateAsString, boost);
+            }
+            value = parseStringValue(dateAsString);
+        }
+
         if (value != null) {
-            LongFieldMapper.CustomLongNumericField field = new LongFieldMapper.CustomLongNumericField(this, timeUnit.toMillis(value), fieldType);
-            field.setBoost(boost);
-            return field;
+            if (fieldType.indexed() || fieldType.stored()) {
+                CustomLongNumericField field = new CustomLongNumericField(this, value, fieldType);
+                field.setBoost(boost);
+                fields.add(field);
+            }
+            if (hasDocValues()) {
+                fields.add(toDocValues(value));
+            }
         }
-
-        if (dateAsString == null) {
-            return null;
-        }
-        if (context.includeInAll(includeInAll, this)) {
-            context.allEntries().addText(names.fullName(), dateAsString, boost);
-        }
-
-        value = parseStringValue(dateAsString);
-        LongFieldMapper.CustomLongNumericField field = new LongFieldMapper.CustomLongNumericField(this, value, fieldType);
-        field.setBoost(boost);
-        return field;
     }
 
     @Override
@@ -394,24 +452,39 @@ public class DateFieldMapper extends NumberFieldMapper<Long> {
         }
         if (!mergeContext.mergeFlags().simulate()) {
             this.nullValue = ((DateFieldMapper) mergeWith).nullValue;
+            this.dateTimeFormatter = ((DateFieldMapper) mergeWith).dateTimeFormatter;
         }
     }
 
     @Override
-    protected void doXContentBody(XContentBuilder builder) throws IOException {
-        super.doXContentBody(builder);
-        if (precisionStep != Defaults.PRECISION_STEP) {
+    protected void doXContentBody(XContentBuilder builder, boolean includeDefaults, Params params) throws IOException {
+        super.doXContentBody(builder, includeDefaults, params);
+
+        if (includeDefaults || precisionStep != Defaults.PRECISION_STEP) {
             builder.field("precision_step", precisionStep);
         }
         builder.field("format", dateTimeFormatter.format());
-        if (nullValue != null) {
+        if (includeDefaults || nullValue != null) {
             builder.field("null_value", nullValue);
         }
         if (includeInAll != null) {
             builder.field("include_in_all", includeInAll);
+        } else if (includeDefaults) {
+            builder.field("include_in_all", false);
         }
-        if (timeUnit != Defaults.TIME_UNIT) {
-            builder.field("numeric_resolution", timeUnit.name().toLowerCase());
+
+        if (includeDefaults || timeUnit != Defaults.TIME_UNIT) {
+            builder.field("numeric_resolution", timeUnit.name().toLowerCase(Locale.ROOT));
+        }
+        // only serialize locale if needed, ROOT is the default, so no need to serialize that case as well...
+        if (dateTimeFormatter.locale() != null && dateTimeFormatter.locale() != Locale.ROOT) {
+            builder.field("locale", dateTimeFormatter.locale());
+        } else if (includeDefaults) {
+            if (dateTimeFormatter.locale() == null) {
+                builder.field("locale", Locale.ROOT);
+            } else {
+                builder.field("locale", dateTimeFormatter.locale());
+            }
         }
     }
 
@@ -423,7 +496,7 @@ public class DateFieldMapper extends NumberFieldMapper<Long> {
                 long time = Long.parseLong(value);
                 return timeUnit.toMillis(time);
             } catch (NumberFormatException e1) {
-                throw new MapperParsingException("failed to parse date field [" + value + "], tried both date format [" + dateTimeFormatter.format() + "], and timestamp number", e);
+                throw new MapperParsingException("failed to parse date field [" + value + "], tried both date format [" + dateTimeFormatter.format() + "], and timestamp number with locale [" + dateTimeFormatter.locale() + "]", e);
             }
         }
     }

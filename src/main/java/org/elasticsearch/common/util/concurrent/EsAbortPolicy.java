@@ -19,8 +19,11 @@
 
 package org.elasticsearch.common.util.concurrent;
 
+import org.elasticsearch.ElasticSearchIllegalStateException;
+import org.elasticsearch.ElasticSearchInterruptedException;
 import org.elasticsearch.common.metrics.CounterMetric;
 
+import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.ThreadPoolExecutor;
 
 /**
@@ -31,8 +34,31 @@ public class EsAbortPolicy implements XRejectedExecutionHandler {
 
     @Override
     public void rejectedExecution(Runnable r, ThreadPoolExecutor executor) {
+        if (r instanceof AbstractRunnable) {
+            if (((AbstractRunnable) r).isForceExecution()) {
+                BlockingQueue<Runnable> queue = executor.getQueue();
+                if (!(queue instanceof SizeBlockingQueue)) {
+                    throw new ElasticSearchIllegalStateException("forced execution, but expected a size queue");
+                }
+                try {
+                    ((SizeBlockingQueue) queue).forcePut(r);
+                } catch (InterruptedException e) {
+                    throw new ElasticSearchInterruptedException(e.getMessage(), e);
+                }
+                return;
+            }
+        }
         rejected.inc();
-        throw new EsRejectedExecutionException("rejected execution of [" + r.getClass().getName() + "]");
+        StringBuilder sb = new StringBuilder("rejected execution ");
+        if (executor.isShutdown()) {
+            sb.append("(shutting down) ");
+        } else {
+            if (executor.getQueue() instanceof SizeBlockingQueue) {
+                sb.append("(queue capacity ").append(((SizeBlockingQueue) executor.getQueue()).capacity()).append(") ");
+            }
+        }
+        sb.append("on ").append(r.toString());
+        throw new EsRejectedExecutionException(sb.toString());
     }
 
     @Override

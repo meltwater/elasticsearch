@@ -19,8 +19,9 @@
 
 package org.elasticsearch.action.admin.indices.warmer.delete;
 
+import org.elasticsearch.Version;
 import org.elasticsearch.action.ActionRequestValidationException;
-import org.elasticsearch.action.support.master.MasterNodeOperationRequest;
+import org.elasticsearch.action.support.master.AcknowledgedRequest;
 import org.elasticsearch.common.Nullable;
 import org.elasticsearch.common.Strings;
 import org.elasticsearch.common.io.stream.StreamInput;
@@ -31,7 +32,7 @@ import java.io.IOException;
 /**
  * A request to delete an index warmer.
  */
-public class DeleteWarmerRequest extends MasterNodeOperationRequest<DeleteWarmerRequest> {
+public class DeleteWarmerRequest extends AcknowledgedRequest<DeleteWarmerRequest> {
 
     private String name;
 
@@ -51,8 +52,7 @@ public class DeleteWarmerRequest extends MasterNodeOperationRequest<DeleteWarmer
 
     @Override
     public ActionRequestValidationException validate() {
-        ActionRequestValidationException validationException = null;
-        return validationException;
+        return null;
     }
 
     /**
@@ -92,6 +92,7 @@ public class DeleteWarmerRequest extends MasterNodeOperationRequest<DeleteWarmer
         super.readFrom(in);
         name = in.readOptionalString();
         indices = in.readStringArray();
+        readTimeout(in, Version.V_0_90_6);
     }
 
     @Override
@@ -99,5 +100,6 @@ public class DeleteWarmerRequest extends MasterNodeOperationRequest<DeleteWarmer
         super.writeTo(out);
         out.writeOptionalString(name);
         out.writeStringArrayNullable(indices);
+        writeTimeout(out, Version.V_0_90_6);
     }
 }

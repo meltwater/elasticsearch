@@ -23,7 +23,6 @@ import org.elasticsearch.action.ActionListener;
 import org.elasticsearch.action.support.master.MasterNodeOperationRequestBuilder;
 import org.elasticsearch.client.IndicesAdminClient;
 import org.elasticsearch.client.internal.InternalIndicesAdminClient;
-import org.elasticsearch.common.Required;
 import org.elasticsearch.common.unit.TimeValue;
 import org.elasticsearch.common.xcontent.XContentBuilder;
 
@@ -46,7 +45,6 @@ public class PutMappingRequestBuilder extends MasterNodeOperationRequestBuilder<
     /**
      * The type of the mappings.
      */
-    @Required
     public PutMappingRequestBuilder setType(String type) {
         request.type(type);
         return this;
@@ -73,6 +71,15 @@ public class PutMappingRequestBuilder extends MasterNodeOperationRequestBuilder<
      */
     public PutMappingRequestBuilder setSource(String mappingSource) {
         request.source(mappingSource);
+        return this;
+    }
+
+    /**
+     * A specialized simplified mapping source method, takes the form of simple properties definition:
+     * ("field1", "type=string,store=true").
+     */
+    public PutMappingRequestBuilder setSource(Object... source) {
+        request.source(source);
         return this;
     }
 

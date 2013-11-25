@@ -19,6 +19,8 @@
 
 package org.elasticsearch.index.query;
 
+import org.elasticsearch.ElasticSearchIllegalArgumentException;
+import org.elasticsearch.common.geo.GeoHashUtils;
 import org.elasticsearch.common.geo.GeoPoint;
 import org.elasticsearch.common.xcontent.XContentBuilder;
 
@@ -83,6 +85,19 @@ public class GeoBoundingBoxFilterBuilder extends BaseFilterBuilder {
     }
 
     /**
+     * Adds top left and bottom right by geohash cell.
+     *
+     * @param geohash the geohash of the cell definign the boundingbox
+     */
+    public GeoBoundingBoxFilterBuilder geohash(String geohash) {
+        topLeft = new GeoPoint();
+        bottomRight = new GeoPoint();
+        GeoHashUtils.decodeCell(geohash, topLeft, bottomRight);
+        return this;
+    }
+
+
+    /**
      * Sets the filter name for the filter that can be used when searching for matched_filters per hit.
      */
     public GeoBoundingBoxFilterBuilder filterName(String filterName) {
@@ -122,7 +137,7 @@ public class GeoBoundingBoxFilterBuilder extends BaseFilterBuilder {
         } else if (topLeft != null) {
             builder.startArray("top_left").value(topLeft.lon()).value(topLeft.lat()).endArray();
         } else {
-            throw new QueryBuilderException("geo_bounding_box requires 'top_left' to be set");
+            throw new ElasticSearchIllegalArgumentException("geo_bounding_box requires 'top_left' to be set");
         }
 
         if (bottomRightGeohash != null) {
@@ -130,7 +145,7 @@ public class GeoBoundingBoxFilterBuilder extends BaseFilterBuilder {
         } else if (bottomRight != null) {
             builder.startArray("bottom_right").value(bottomRight.lon()).value(bottomRight.lat()).endArray();
         } else {
-            throw new QueryBuilderException("geo_bounding_box requires 'bottom_right' to be set");
+            throw new ElasticSearchIllegalArgumentException("geo_bounding_box requires 'bottom_right' to be set");
         }
         builder.endObject();
 

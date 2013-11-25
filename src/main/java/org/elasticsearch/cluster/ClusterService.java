@@ -23,8 +23,12 @@ import org.elasticsearch.ElasticSearchIllegalStateException;
 import org.elasticsearch.cluster.block.ClusterBlock;
 import org.elasticsearch.cluster.node.DiscoveryNode;
 import org.elasticsearch.cluster.routing.operation.OperationRouting;
+import org.elasticsearch.cluster.service.PendingClusterTask;
+import org.elasticsearch.common.Priority;
 import org.elasticsearch.common.component.LifecycleComponent;
 import org.elasticsearch.common.unit.TimeValue;
+
+import java.util.List;
 
 /**
  * The cluster service allowing to both register for cluster state events ({@link ClusterStateListener})
@@ -90,5 +94,15 @@ public interface ClusterService extends LifecycleComponent<ClusterService> {
     /**
      * Submits a task that will update the cluster state.
      */
+    void submitStateUpdateTask(final String source, Priority priority, final ClusterStateUpdateTask updateTask);
+
+    /**
+     * Submits a task that will update the cluster state (the task has a default priority of {@link Priority#NORMAL}).
+     */
     void submitStateUpdateTask(final String source, final ClusterStateUpdateTask updateTask);
+
+    /**
+     * Returns the tasks that are pending.
+     */
+    List<PendingClusterTask> pendingTasks();
 }

@@ -24,6 +24,9 @@ import org.elasticsearch.ElasticSearchParseException;
 import org.elasticsearch.common.Strings;
 import org.elasticsearch.common.joda.FormatDateTimeFormatter;
 import org.elasticsearch.common.joda.Joda;
+import org.elasticsearch.common.settings.ImmutableSettings;
+import org.elasticsearch.common.settings.Settings;
+import org.elasticsearch.common.settings.loader.SettingsLoader;
 import org.elasticsearch.index.analysis.NamedAnalyzer;
 import org.elasticsearch.index.mapper.ContentPath;
 import org.elasticsearch.index.mapper.Mapper;
@@ -32,6 +35,7 @@ import org.elasticsearch.index.mapper.MapperParsingException;
 import java.util.Map;
 
 import static org.elasticsearch.common.xcontent.support.XContentMapValues.*;
+import static org.elasticsearch.index.mapper.FieldMapper.DOC_VALUES_FORMAT;
 
 /**
  *
@@ -115,10 +119,19 @@ public class TypeParsers {
             } else if (propName.equals("postings_format")) {
                 String postingFormatName = propNode.toString();
                 builder.postingsFormat(parserContext.postingFormatService().get(postingFormatName));
+            } else if (propName.equals(DOC_VALUES_FORMAT)) {
+                String docValuesFormatName = propNode.toString();
+                builder.docValuesFormat(parserContext.docValuesFormatService().get(docValuesFormatName));
             } else if (propName.equals("similarity")) {
                 builder.similarity(parserContext.similarityLookupService().similarity(propNode.toString()));
             } else if (propName.equals("fielddata")) {
-                builder.fieldDataSettings(propNode.toString());
+                final Settings settings;
+                if (propNode instanceof Map){
+                    settings = ImmutableSettings.builder().put(SettingsLoader.Helper.loadNestedFromMap((Map<String, Object>)propNode)).build();
+                } else {
+                    throw new ElasticSearchParseException("fielddata should be a hash but was of type: " + propNode.getClass());
+                }
+                builder.fieldDataSettings(settings);
             }
         }
     }
@@ -155,6 +168,13 @@ public class TypeParsers {
         } else if ("with_positions_offsets".equals(termVector)) {
             builder.storeTermVectorPositions(true);
             builder.storeTermVectorOffsets(true);
+        } else if ("with_positions_payloads".equals(termVector)) {
+            builder.storeTermVectorPositions(true);
+            builder.storeTermVectorPayloads(true);
+        } else if ("with_positions_offsets_payloads".equals(termVector)) {
+            builder.storeTermVectorPositions(true);
+            builder.storeTermVectorOffsets(true);
+            builder.storeTermVectorPayloads(true);
         } else {
             throw new MapperParsingException("Wrong value for termVector [" + termVector + "] for field [" + fieldName + "]");
         }
@@ -172,6 +192,16 @@ public class TypeParsers {
             builder.tokenized(true);
         } else {
             throw new MapperParsingException("Wrong value for index [" + index + "] for field [" + fieldName + "]");
+        }
+    }
+
+    public static boolean parseDocValues(String docValues) {
+        if ("no".equals(docValues)) {
+            return false;
+        } else if ("yes".equals(docValues)) {
+            return true;
+        } else {
+            return nodeBooleanValue(docValues);
         }
     }
 

@@ -33,9 +33,9 @@ import org.elasticsearch.common.xcontent.XContentBuilder;
 import org.elasticsearch.index.query.QueryBuilders;
 import org.elasticsearch.index.query.QueryStringQueryBuilder;
 import org.elasticsearch.rest.*;
-import org.elasticsearch.rest.action.support.RestActions;
 import org.elasticsearch.search.Scroll;
 import org.elasticsearch.search.builder.SearchSourceBuilder;
+import org.elasticsearch.search.fetch.source.FetchSourceContext;
 import org.elasticsearch.search.sort.SortOrder;
 
 import java.io.IOException;
@@ -45,7 +45,7 @@ import static org.elasticsearch.rest.RestRequest.Method.GET;
 import static org.elasticsearch.rest.RestRequest.Method.POST;
 import static org.elasticsearch.rest.RestStatus.BAD_REQUEST;
 import static org.elasticsearch.rest.action.support.RestXContentBuilder.restContentBuilder;
-import static org.elasticsearch.search.suggest.SuggestBuilder.fuzzySuggestion;
+import static org.elasticsearch.search.suggest.SuggestBuilder.termSuggestion;
 
 /**
  *
@@ -67,7 +67,7 @@ public class RestSearchAction extends BaseRestHandler {
     public void handleRequest(final RestRequest request, final RestChannel channel) {
         SearchRequest searchRequest;
         try {
-            searchRequest = parseSearchRequest(request);
+            searchRequest = RestSearchAction.parseSearchRequest(request);
             searchRequest.listenerThreaded(false);
             SearchOperationThreading operationThreading = SearchOperationThreading.fromString(request.param("operation_threading"), null);
             if (operationThreading != null) {
@@ -117,8 +117,8 @@ public class RestSearchAction extends BaseRestHandler {
         });
     }
 
-    private SearchRequest parseSearchRequest(RestRequest request) {
-        String[] indices = RestActions.splitIndices(request.param("index"));
+    public static SearchRequest parseSearchRequest(RestRequest request) {
+        String[] indices = Strings.splitStringByCommaToArray(request.param("index"));
         SearchRequest searchRequest = new SearchRequest(indices);
         // get the content, and put it in the body
         if (request.hasContent()) {
@@ -139,7 +139,7 @@ public class RestSearchAction extends BaseRestHandler {
             searchRequest.scroll(new Scroll(parseTimeValue(scroll, null)));
         }
 
-        searchRequest.types(RestActions.splitTypes(request.param("type")));
+        searchRequest.types(Strings.splitStringByCommaToArray(request.param("type")));
         searchRequest.routing(request.param("routing"));
         searchRequest.preference(request.param("preference"));
         if (request.hasParam("ignore_indices")) {
@@ -149,7 +149,7 @@ public class RestSearchAction extends BaseRestHandler {
         return searchRequest;
     }
 
-    private SearchSourceBuilder parseSearchSource(RestRequest request) {
+    public static SearchSourceBuilder parseSearchSource(RestRequest request) {
         SearchSourceBuilder searchSourceBuilder = null;
         String queryString = request.param("q");
         if (queryString != null) {
@@ -225,6 +225,20 @@ public class RestSearchAction extends BaseRestHandler {
                 }
             }
         }
+        FetchSourceContext fetchSourceContext = FetchSourceContext.parseFromRestRequest(request);
+        if (fetchSourceContext != null) {
+            if (searchSourceBuilder == null) {
+                searchSourceBuilder = new SearchSourceBuilder();
+            }
+            searchSourceBuilder.fetchSource(fetchSourceContext);
+        }
+
+        if (request.hasParam("track_scores")) {
+            if (searchSourceBuilder == null) {
+                searchSourceBuilder = new SearchSourceBuilder();
+            }
+            searchSourceBuilder.trackScores(request.paramAsBoolean("track_scores", false));
+        }
 
         String sSorts = request.param("sort");
         if (sSorts != null) {
@@ -286,8 +300,8 @@ public class RestSearchAction extends BaseRestHandler {
             }
             String suggestMode = request.param("suggest_mode");
             searchSourceBuilder.suggest().addSuggestion(
-                    fuzzySuggestion(suggestField).setField(suggestField).setText(suggestText).setSize(suggestSize)
-                            .setSuggestMode(suggestMode)
+                    termSuggestion(suggestField).field(suggestField).text(suggestText).size(suggestSize)
+                            .suggestMode(suggestMode)
             );
         }
 

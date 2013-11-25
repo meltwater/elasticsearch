@@ -19,8 +19,10 @@
 
 package org.elasticsearch.benchmark.transport;
 
+import org.apache.lucene.util.BytesRef;
+import org.elasticsearch.Version;
 import org.elasticsearch.cluster.node.DiscoveryNode;
-import org.elasticsearch.common.Bytes;
+import org.elasticsearch.common.network.NetworkService;
 import org.elasticsearch.common.settings.ImmutableSettings;
 import org.elasticsearch.common.settings.Settings;
 import org.elasticsearch.common.transport.InetSocketTransportAddress;
@@ -48,11 +50,13 @@ public class BenchmarkNettyLargeMessages {
         Settings settings = ImmutableSettings.settingsBuilder()
                 .build();
 
-        final ThreadPool threadPool = new ThreadPool();
-        final TransportService transportServiceServer = new TransportService(new NettyTransport(settings, threadPool), threadPool).start();
-        final TransportService transportServiceClient = new TransportService(new NettyTransport(settings, threadPool), threadPool).start();
+        NetworkService networkService = new NetworkService(settings);
 
-        final DiscoveryNode bigNode = new DiscoveryNode("big", new InetSocketTransportAddress("localhost", 9300));
+        final ThreadPool threadPool = new ThreadPool();
+        final TransportService transportServiceServer = new TransportService(new NettyTransport(settings, threadPool, networkService, Version.CURRENT), threadPool).start();
+        final TransportService transportServiceClient = new TransportService(new NettyTransport(settings, threadPool, networkService, Version.CURRENT), threadPool).start();
+
+        final DiscoveryNode bigNode = new DiscoveryNode("big", new InetSocketTransportAddress("localhost", 9300), Version.CURRENT);
 //        final DiscoveryNode smallNode = new DiscoveryNode("small", new InetSocketTransportAddress("localhost", 9300));
         final DiscoveryNode smallNode = bigNode;
 
@@ -83,7 +87,7 @@ public class BenchmarkNettyLargeMessages {
                 public void run() {
                     for (int i = 0; i < NUMBER_OF_ITERATIONS; i++) {
                         BenchmarkMessageRequest message = new BenchmarkMessageRequest(1, payload);
-                        transportServiceClient.submitRequest(bigNode, "benchmark", message, options().withLowType(), new BaseTransportResponseHandler<BenchmarkMessageResponse>() {
+                        transportServiceClient.submitRequest(bigNode, "benchmark", message, options().withType(TransportRequestOptions.Type.BULK), new BaseTransportResponseHandler<BenchmarkMessageResponse>() {
                             @Override
                             public BenchmarkMessageResponse newInstance() {
                                 return new BenchmarkMessageResponse();
@@ -113,9 +117,9 @@ public class BenchmarkNettyLargeMessages {
             @Override
             public void run() {
                 for (int i = 0; i < 1; i++) {
-                    BenchmarkMessageRequest message = new BenchmarkMessageRequest(2, Bytes.EMPTY_ARRAY);
+                    BenchmarkMessageRequest message = new BenchmarkMessageRequest(2, BytesRef.EMPTY_BYTES);
                     long start = System.currentTimeMillis();
-                    transportServiceClient.submitRequest(smallNode, "benchmark", message, options().withHighType(), new BaseTransportResponseHandler<BenchmarkMessageResponse>() {
+                    transportServiceClient.submitRequest(smallNode, "benchmark", message, options().withType(TransportRequestOptions.Type.STATE), new BaseTransportResponseHandler<BenchmarkMessageResponse>() {
                         @Override
                         public BenchmarkMessageResponse newInstance() {
                             return new BenchmarkMessageResponse();

@@ -62,6 +62,7 @@ public class RestPutIndexTemplateAction extends BaseRestHandler {
         putRequest.listenerThreaded(false);
         putRequest.template(request.param("template", putRequest.template()));
         putRequest.order(request.paramAsInt("order", putRequest.order()));
+        putRequest.masterNodeTimeout(request.paramAsTime("master_timeout", putRequest.masterNodeTimeout()));
 
         try {
             putRequest.create(request.paramAsBoolean("create", false));
@@ -84,7 +85,7 @@ public class RestPutIndexTemplateAction extends BaseRestHandler {
                     XContentBuilder builder = RestXContentBuilder.restContentBuilder(request);
                     builder.startObject()
                             .field(Fields.OK, true)
-                            .field(Fields.ACKNOWLEDGED, response.acknowledged())
+                            .field(Fields.ACKNOWLEDGED, response.isAcknowledged())
                             .endObject();
                     channel.sendResponse(new XContentRestResponse(request, OK, builder));
                 } catch (IOException e) {

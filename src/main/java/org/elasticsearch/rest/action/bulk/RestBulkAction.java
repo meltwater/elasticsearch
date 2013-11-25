@@ -24,7 +24,8 @@ import org.elasticsearch.action.WriteConsistencyLevel;
 import org.elasticsearch.action.bulk.BulkItemResponse;
 import org.elasticsearch.action.bulk.BulkRequest;
 import org.elasticsearch.action.bulk.BulkResponse;
-import org.elasticsearch.action.index.IndexResponse;
+import org.elasticsearch.action.bulk.BulkShardRequest;
+import org.elasticsearch.action.delete.DeleteResponse;
 import org.elasticsearch.action.support.replication.ReplicationType;
 import org.elasticsearch.client.Client;
 import org.elasticsearch.client.Requests;
@@ -53,6 +54,8 @@ import static org.elasticsearch.rest.action.support.RestXContentBuilder.restCont
  */
 public class RestBulkAction extends BaseRestHandler {
 
+    private final boolean allowExplicitIndex;
+
     @Inject
     public RestBulkAction(Settings settings, Client client, RestController controller) {
         super(settings, client);
@@ -63,6 +66,8 @@ public class RestBulkAction extends BaseRestHandler {
         controller.registerHandler(PUT, "/{index}/_bulk", this);
         controller.registerHandler(POST, "/{index}/{type}/_bulk", this);
         controller.registerHandler(PUT, "/{index}/{type}/_bulk", this);
+
+        this.allowExplicitIndex = settings.getAsBoolean("rest.action.multi.allow_explicit_index", true);
     }
 
     @Override
@@ -71,6 +76,7 @@ public class RestBulkAction extends BaseRestHandler {
         bulkRequest.listenerThreaded(false);
         String defaultIndex = request.param("index");
         String defaultType = request.param("type");
+        String defaultRouting = request.param("routing");
 
         String replicationType = request.param("replication");
         if (replicationType != null) {
@@ -80,9 +86,10 @@ public class RestBulkAction extends BaseRestHandler {
         if (consistencyLevel != null) {
             bulkRequest.consistencyLevel(WriteConsistencyLevel.fromString(consistencyLevel));
         }
+        bulkRequest.timeout(request.paramAsTime("timeout", BulkShardRequest.DEFAULT_TIMEOUT));
         bulkRequest.refresh(request.paramAsBoolean("refresh", bulkRequest.refresh()));
         try {
-            bulkRequest.add(request.content(), request.contentUnsafe(), defaultIndex, defaultType);
+            bulkRequest.add(request.content(), request.contentUnsafe(), defaultIndex, defaultType, defaultRouting, null, allowExplicitIndex);
         } catch (Exception e) {
             try {
                 XContentBuilder builder = restContentBuilder(request);
@@ -99,32 +106,26 @@ public class RestBulkAction extends BaseRestHandler {
                 try {
                     XContentBuilder builder = restContentBuilder(request);
                     builder.startObject();
-                    builder.field(Fields.TOOK, response.tookInMillis());
+                    builder.field(Fields.TOOK, response.getTookInMillis());
                     builder.startArray(Fields.ITEMS);
                     for (BulkItemResponse itemResponse : response) {
                         builder.startObject();
-                        builder.startObject(itemResponse.opType());
-                        builder.field(Fields._INDEX, itemResponse.index());
-                        builder.field(Fields._TYPE, itemResponse.type());
-                        builder.field(Fields._ID, itemResponse.id());
-                        long version = itemResponse.version();
+                        builder.startObject(itemResponse.getOpType());
+                        builder.field(Fields._INDEX, itemResponse.getIndex());
+                        builder.field(Fields._TYPE, itemResponse.getType());
+                        builder.field(Fields._ID, itemResponse.getId());
+                        long version = itemResponse.getVersion();
                         if (version != -1) {
-                            builder.field(Fields._VERSION, itemResponse.version());
+                            builder.field(Fields._VERSION, itemResponse.getVersion());
                         }
-                        if (itemResponse.failed()) {
-                            builder.field(Fields.ERROR, itemResponse.failure().message());
+                        if (itemResponse.isFailed()) {
+                            builder.field(Fields.ERROR, itemResponse.getFailure().getMessage());
                         } else {
                             builder.field(Fields.OK, true);
                         }
-                        if (itemResponse.response() instanceof IndexResponse) {
-                            IndexResponse indexResponse = itemResponse.response();
-                            if (indexResponse.matches() != null) {
-                                builder.startArray(Fields.MATCHES);
-                                for (String match : indexResponse.matches()) {
-                                    builder.value(match);
-                                }
-                                builder.endArray();
-                            }
+                        if (itemResponse.getResponse() instanceof DeleteResponse) {
+                            DeleteResponse deleteResponse = itemResponse.getResponse();
+                            builder.field(Fields.FOUND, !deleteResponse.isNotFound());
                         }
                         builder.endObject();
                         builder.endObject();
@@ -133,7 +134,7 @@ public class RestBulkAction extends BaseRestHandler {
 
                     builder.endObject();
                     channel.sendResponse(new XContentRestResponse(request, OK, builder));
-                } catch (Exception e) {
+                } catch (Throwable e) {
                     onFailure(e);
                 }
             }
@@ -158,7 +159,7 @@ public class RestBulkAction extends BaseRestHandler {
         static final XContentBuilderString OK = new XContentBuilderString("ok");
         static final XContentBuilderString TOOK = new XContentBuilderString("took");
         static final XContentBuilderString _VERSION = new XContentBuilderString("_version");
-        static final XContentBuilderString MATCHES = new XContentBuilderString("matches");
+        static final XContentBuilderString FOUND = new XContentBuilderString("found");
     }
 
 }

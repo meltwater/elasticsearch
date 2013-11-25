@@ -22,14 +22,14 @@ package org.elasticsearch.action.admin.indices.warmer.put;
 import org.elasticsearch.action.ActionListener;
 import org.elasticsearch.action.search.SearchRequest;
 import org.elasticsearch.action.search.SearchRequestBuilder;
-import org.elasticsearch.action.support.master.MasterNodeOperationRequestBuilder;
+import org.elasticsearch.action.support.master.AcknowledgedRequestBuilder;
 import org.elasticsearch.client.IndicesAdminClient;
 import org.elasticsearch.client.internal.InternalIndicesAdminClient;
 
 /**
  *
  */
-public class PutWarmerRequestBuilder extends MasterNodeOperationRequestBuilder<PutWarmerRequest, PutWarmerResponse, PutWarmerRequestBuilder> {
+public class PutWarmerRequestBuilder extends AcknowledgedRequestBuilder<PutWarmerRequest, PutWarmerResponse, PutWarmerRequestBuilder> {
 
     public PutWarmerRequestBuilder(IndicesAdminClient indicesClient, String name) {
         super((InternalIndicesAdminClient) indicesClient, new PutWarmerRequest().name(name));

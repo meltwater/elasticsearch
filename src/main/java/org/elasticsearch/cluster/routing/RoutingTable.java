@@ -26,6 +26,7 @@ import org.elasticsearch.cluster.metadata.MetaData;
 import org.elasticsearch.common.io.stream.StreamInput;
 import org.elasticsearch.common.io.stream.StreamOutput;
 import org.elasticsearch.index.Index;
+import org.elasticsearch.index.shard.ShardId;
 import org.elasticsearch.indices.IndexMissingException;
 
 import java.io.IOException;
@@ -38,7 +39,8 @@ import static com.google.common.collect.Maps.newHashMap;
 
 /**
  * Represents a global cluster-wide routing table for all indices including the
- * version of the current routing state. 
+ * version of the current routing state.
+ *
  * @see IndexRoutingTable
  */
 public class RoutingTable implements Iterable<IndexRoutingTable> {
@@ -57,6 +59,7 @@ public class RoutingTable implements Iterable<IndexRoutingTable> {
 
     /**
      * Returns the version of the {@link RoutingTable}.
+     *
      * @return version of the {@link RoutingTable}
      */
     public long version() {
@@ -259,18 +262,24 @@ public class RoutingTable implements Iterable<IndexRoutingTable> {
         return new Builder();
     }
 
+    public static Builder builder(RoutingTable routingTable) {
+        return new Builder(routingTable);
+    }
+
     public static class Builder {
 
         private long version;
-
         private final Map<String, IndexRoutingTable> indicesRouting = newHashMap();
 
-        public Builder routingTable(RoutingTable routingTable) {
+        public Builder() {
+
+        }
+
+        public Builder(RoutingTable routingTable) {
             version = routingTable.version;
             for (IndexRoutingTable indexRoutingTable : routingTable) {
                 indicesRouting.put(indexRoutingTable.index(), indexRoutingTable);
             }
-            return this;
         }
 
         public Builder updateNodes(RoutingNodes routingNodes) {
@@ -305,6 +314,14 @@ public class RoutingTable implements Iterable<IndexRoutingTable> {
                 IndexShardRoutingTable refData = routingNodes.routingTable().index(shardRoutingEntry.index()).shard(shardRoutingEntry.id());
                 indexBuilder.addShard(refData, shardRoutingEntry);
             }
+
+            for (ShardId shardId : routingNodes.getShardsToClearPostAllocationFlag()) {
+                IndexRoutingTable.Builder indexRoutingBuilder = indexRoutingTableBuilders.get(shardId.index().name());
+                if (indexRoutingBuilder != null) {
+                    indexRoutingBuilder.clearPostAllocationFlag(shardId);
+                }
+            }
+
             for (IndexRoutingTable.Builder indexBuilder : indexRoutingTableBuilders.values()) {
                 add(indexBuilder);
             }
@@ -362,6 +379,20 @@ public class RoutingTable implements Iterable<IndexRoutingTable> {
                         .initializeAsRecovery(indexMetaData);
                 add(indexRoutingBuilder);
             }
+            return this;
+        }
+
+        public Builder addAsRestore(IndexMetaData indexMetaData, RestoreSource restoreSource) {
+            IndexRoutingTable.Builder indexRoutingBuilder = new IndexRoutingTable.Builder(indexMetaData.index())
+                    .initializeAsRestore(indexMetaData, restoreSource);
+            add(indexRoutingBuilder);
+            return this;
+        }
+
+        public Builder addAsNewRestore(IndexMetaData indexMetaData, RestoreSource restoreSource) {
+            IndexRoutingTable.Builder indexRoutingBuilder = new IndexRoutingTable.Builder(indexMetaData.index())
+                    .initializeAsNewRestore(indexMetaData, restoreSource);
+            add(indexRoutingBuilder);
             return this;
         }
 

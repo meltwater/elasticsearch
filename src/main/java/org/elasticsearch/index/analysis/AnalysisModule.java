@@ -387,7 +387,7 @@ public class AnalysisModule extends AbstractModule {
         }
 
 
-        // go over the tokenizers in the bindings and register the ones that are not configured
+        // go over the analyzers in the bindings and register the ones that are not configured
         for (Map.Entry<String, Class<? extends AnalyzerProvider>> entry : analyzersBindings.analyzers.entrySet()) {
             String analyzerName = entry.getKey();
             Class<? extends AnalyzerProvider> clazz = entry.getValue();
@@ -408,7 +408,6 @@ public class AnalysisModule extends AbstractModule {
             }
         }
 
-
         bind(AnalysisService.class).in(Scopes.SINGLETON);
     }
 
@@ -417,6 +416,7 @@ public class AnalysisModule extends AbstractModule {
         @Override
         public void processCharFilters(CharFiltersBindings charFiltersBindings) {
             charFiltersBindings.processCharFilter("html_strip", HtmlStripCharFilterFactory.class);
+            charFiltersBindings.processCharFilter("pattern_replace", PatternReplaceCharFilterFactory.class);
         }
 
         @Override
@@ -437,6 +437,8 @@ public class AnalysisModule extends AbstractModule {
             tokenFiltersBindings.processTokenFilter("unique", UniqueTokenFilterFactory.class);
             tokenFiltersBindings.processTokenFilter("truncate", TruncateTokenFilterFactory.class);
             tokenFiltersBindings.processTokenFilter("trim", TrimTokenFilterFactory.class);
+            tokenFiltersBindings.processTokenFilter("limit", LimitTokenCountFilterFactory.class);
+            tokenFiltersBindings.processTokenFilter("common_grams", CommonGramsTokenFilterFactory.class);
         }
 
         @Override
@@ -478,10 +480,12 @@ public class AnalysisModule extends AbstractModule {
             tokenFiltersBindings.processTokenFilter("snowball", SnowballTokenFilterFactory.class);
             tokenFiltersBindings.processTokenFilter("stemmer", StemmerTokenFilterFactory.class);
             tokenFiltersBindings.processTokenFilter("word_delimiter", WordDelimiterTokenFilterFactory.class);
+            tokenFiltersBindings.processTokenFilter("delimited_payload_filter", DelimitedPayloadTokenFilterFactory.class);
             tokenFiltersBindings.processTokenFilter("synonym", SynonymTokenFilterFactory.class);
             tokenFiltersBindings.processTokenFilter("elision", ElisionTokenFilterFactory.class);
             tokenFiltersBindings.processTokenFilter("keep", KeepWordFilterFactory.class);
 
+            tokenFiltersBindings.processTokenFilter("pattern_capture", PatternCaptureGroupTokenFilterFactory.class);
             tokenFiltersBindings.processTokenFilter("pattern_replace", PatternReplaceTokenFilterFactory.class);
             tokenFiltersBindings.processTokenFilter("dictionary_decompounder", DictionaryCompoundWordTokenFilterFactory.class);
             tokenFiltersBindings.processTokenFilter("hyphenation_decompounder", HyphenationCompoundWordTokenFilterFactory.class);
@@ -497,7 +501,14 @@ public class AnalysisModule extends AbstractModule {
             tokenFiltersBindings.processTokenFilter("keyword_marker", KeywordMarkerTokenFilterFactory.class);
             tokenFiltersBindings.processTokenFilter("stemmer_override", StemmerOverrideTokenFilterFactory.class);
 
+            tokenFiltersBindings.processTokenFilter("arabic_normalization", ArabicNormalizationFilterFactory.class);
+            tokenFiltersBindings.processTokenFilter("persian_normalization", PersianNormalizationFilterFactory.class);
+
             tokenFiltersBindings.processTokenFilter("hunspell", HunspellTokenFilterFactory.class);
+            tokenFiltersBindings.processTokenFilter("cjk_bigram", CJKBigramFilterFactory.class);
+            tokenFiltersBindings.processTokenFilter("cjk_width", CJKWidthFilterFactory.class);
+
+
         }
 
         @Override

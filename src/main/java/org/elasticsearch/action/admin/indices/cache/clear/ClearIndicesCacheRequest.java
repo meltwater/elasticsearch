@@ -20,7 +20,6 @@
 package org.elasticsearch.action.admin.indices.cache.clear;
 
 import org.elasticsearch.action.support.broadcast.BroadcastOperationRequest;
-import org.elasticsearch.action.support.broadcast.BroadcastOperationThreading;
 import org.elasticsearch.common.io.stream.StreamInput;
 import org.elasticsearch.common.io.stream.StreamOutput;
 
@@ -34,15 +33,16 @@ public class ClearIndicesCacheRequest extends BroadcastOperationRequest<ClearInd
     private boolean filterCache = false;
     private boolean fieldDataCache = false;
     private boolean idCache = false;
+    private boolean recycler = false;
     private String[] fields = null;
+    private String[] filterKeys = null;
+    
 
     ClearIndicesCacheRequest() {
     }
 
     public ClearIndicesCacheRequest(String... indices) {
         super(indices);
-        // we want to do the refresh in parallel on local shards...
-        operationThreading(BroadcastOperationThreading.THREAD_PER_SHARD);
     }
 
     public boolean filterCache() {
@@ -72,8 +72,26 @@ public class ClearIndicesCacheRequest extends BroadcastOperationRequest<ClearInd
         return this.fields;
     }
 
+    public ClearIndicesCacheRequest filterKeys(String... filterKeys) {
+        this.filterKeys = filterKeys;
+        return this;
+    }
+
+    public String[] filterKeys() {
+        return this.filterKeys;
+    }
+
     public boolean idCache() {
         return this.idCache;
+    }
+    
+    public ClearIndicesCacheRequest recycler(boolean recycler) {
+        this.recycler = recycler;
+        return this;
+    }
+    
+    public boolean recycler() {
+        return this.recycler;
     }
 
     public ClearIndicesCacheRequest idCache(boolean idCache) {
@@ -86,13 +104,9 @@ public class ClearIndicesCacheRequest extends BroadcastOperationRequest<ClearInd
         filterCache = in.readBoolean();
         fieldDataCache = in.readBoolean();
         idCache = in.readBoolean();
-        int size = in.readVInt();
-        if (size > 0) {
-            fields = new String[size];
-            for (int i = 0; i < size; i++) {
-                fields[i] = in.readString();
-            }
-        }
+        recycler = in.readBoolean();
+        fields = in.readStringArray();
+        filterKeys = in.readStringArray();
     }
 
     public void writeTo(StreamOutput out) throws IOException {
@@ -100,13 +114,10 @@ public class ClearIndicesCacheRequest extends BroadcastOperationRequest<ClearInd
         out.writeBoolean(filterCache);
         out.writeBoolean(fieldDataCache);
         out.writeBoolean(idCache);
-        if (fields == null) {
-            out.writeVInt(0);
-        } else {
-            out.writeVInt(fields.length);
-            for (String field : fields) {
-                out.writeString(field);
-            }
-        }
+        out.writeBoolean(recycler);
+        out.writeStringArrayNullable(fields);
+        out.writeStringArrayNullable(filterKeys);
     }
+
+   
 }

@@ -32,7 +32,9 @@ public class HasChildFilterBuilder extends BaseFilterBuilder {
     private final QueryBuilder queryBuilder;
     private String childType;
     private String filterName;
-    private String executionType;
+    private Boolean cache;
+    private String cacheKey;
+    private Integer shortCircuitCutoff;
 
     public HasChildFilterBuilder(String type, QueryBuilder queryBuilder) {
         this.childType = type;
@@ -55,12 +57,28 @@ public class HasChildFilterBuilder extends BaseFilterBuilder {
     }
 
     /**
-     * Expert: Sets the low level child to parent filtering implementation. Can be: 'bitset' or 'uid'
-     * <p/>
-     * This option is experimental and will be removed.
+     * Should the filter be cached or not. Defaults to <tt>false</tt>.
      */
-    public HasChildFilterBuilder executionType(String executionType) {
-        this.executionType = executionType;
+    public HasChildFilterBuilder cache(boolean cache) {
+        this.cache = cache;
+        return this;
+    }
+
+    /**
+     * Defines what should be used as key to represent this filter in the filter cache.
+     * By default the filter itself is used as key.
+     */
+    public HasChildFilterBuilder cacheKey(String cacheKey) {
+        this.cacheKey = cacheKey;
+        return this;
+    }
+
+    /**
+     * Configures at what cut off point only to evaluate parent documents that contain the matching parent id terms
+     * instead of evaluating all parent docs.
+     */
+    public HasChildFilterBuilder setShortCircuitCutoff(int shortCircuitCutoff) {
+        this.shortCircuitCutoff = shortCircuitCutoff;
         return this;
     }
 
@@ -78,8 +96,14 @@ public class HasChildFilterBuilder extends BaseFilterBuilder {
         if (filterName != null) {
             builder.field("_name", filterName);
         }
-        if (executionType != null) {
-            builder.field("execution_type", executionType);
+        if (cache != null) {
+            builder.field("_cache", cache);
+        }
+        if (cacheKey != null) {
+            builder.field("_cache_key", cacheKey);
+        }
+        if (shortCircuitCutoff != null) {
+            builder.field("short_circuit_cutoff", shortCircuitCutoff);
         }
         builder.endObject();
     }

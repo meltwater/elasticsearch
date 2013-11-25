@@ -29,6 +29,7 @@ import org.elasticsearch.common.xcontent.XContentBuilderString;
 import org.elasticsearch.common.xcontent.XContentFactory;
 import org.elasticsearch.rest.RestStatus;
 import org.elasticsearch.search.SearchHits;
+import org.elasticsearch.search.aggregations.Aggregations;
 import org.elasticsearch.search.facet.Facets;
 import org.elasticsearch.search.internal.InternalSearchResponse;
 import org.elasticsearch.search.suggest.Suggest;
@@ -69,15 +70,18 @@ public class SearchResponse extends ActionResponse implements ToXContent {
 
     public RestStatus status() {
         if (shardFailures.length == 0) {
+            if (successfulShards == 0 && totalShards > 0) {
+                return RestStatus.SERVICE_UNAVAILABLE;
+            }
             return RestStatus.OK;
         }
+        // if total failure, bubble up the status code to the response level
         if (successfulShards == 0 && totalShards > 0) {
-            RestStatus status = shardFailures[0].status();
-            if (shardFailures.length > 1) {
-                for (int i = 1; i < shardFailures.length; i++) {
-                    if (shardFailures[i].status().getStatus() >= 500) {
-                        status = shardFailures[i].status();
-                    }
+            RestStatus status = RestStatus.OK;
+            for (int i = 0; i < shardFailures.length; i++) {
+                RestStatus shardStatus = shardFailures[i].status();
+                if (shardStatus.getStatus() >= status.getStatus()) {
+                    status = shardFailures[i].status();
                 }
             }
             return status;
@@ -88,82 +92,45 @@ public class SearchResponse extends ActionResponse implements ToXContent {
     /**
      * The search hits.
      */
-    public SearchHits hits() {
-        return internalResponse.hits();
-    }
-
-    /**
-     * The search hits.
-     */
     public SearchHits getHits() {
-        return hits();
-    }
-
-    /**
-     * The search facets.
-     */
-    public Facets facets() {
-        return internalResponse.facets();
-    }
-
-    public Suggest suggest() {
-        return internalResponse.suggest();
+        return internalResponse.hits();
     }
 
     /**
      * The search facets.
      */
     public Facets getFacets() {
-        return facets();
+        return internalResponse.facets();
     }
 
-    /**
-     * Has the search operation timed out.
-     */
-    public boolean timedOut() {
-        return internalResponse.timedOut();
+    public Aggregations getAggregations() {
+        return internalResponse.aggregations();
+    }
+
+
+    public Suggest getSuggest() {
+        return internalResponse.suggest();
     }
 
     /**
      * Has the search operation timed out.
      */
     public boolean isTimedOut() {
-        return timedOut();
-    }
-
-    /**
-     * How long the search took.
-     */
-    public TimeValue took() {
-        return new TimeValue(tookInMillis);
+        return internalResponse.timedOut();
     }
 
     /**
      * How long the search took.
      */
     public TimeValue getTook() {
-        return took();
-    }
-
-    /**
-     * How long the search took in milliseconds.
-     */
-    public long tookInMillis() {
-        return tookInMillis;
+        return new TimeValue(tookInMillis);
     }
 
     /**
      * How long the search took in milliseconds.
      */
     public long getTookInMillis() {
-        return tookInMillis();
-    }
-
-    /**
-     * The total number of shards the search was executed on.
-     */
-    public int totalShards() {
-        return totalShards;
+        return tookInMillis;
     }
 
     /**
@@ -176,13 +143,6 @@ public class SearchResponse extends ActionResponse implements ToXContent {
     /**
      * The successful number of shards the search was executed on.
      */
-    public int successfulShards() {
-        return successfulShards;
-    }
-
-    /**
-     * The successful number of shards the search was executed on.
-     */
     public int getSuccessfulShards() {
         return successfulShards;
     }
@@ -190,37 +150,17 @@ public class SearchResponse extends ActionResponse implements ToXContent {
     /**
      * The failed number of shards the search was executed on.
      */
-    public int failedShards() {
-        return totalShards - successfulShards;
-    }
-
-    /**
-     * The failed number of shards the search was executed on.
-     */
     public int getFailedShards() {
-        return failedShards();
-    }
-
-    /**
-     * The failures that occurred during the search.
-     */
-    public ShardSearchFailure[] shardFailures() {
-        return this.shardFailures;
+        // we don't return totalShards - successfulShards, we don't count "no shards available" as a failed shard, just don't
+        // count it in the successful counter
+        return shardFailures.length;
     }
 
     /**
      * The failures that occurred during the search.
      */
     public ShardSearchFailure[] getShardFailures() {
-        return shardFailures;
-    }
-
-    /**
-     * If scrolling was enabled ({@link SearchRequest#scroll(org.elasticsearch.search.Scroll)}, the
-     * scroll id that can be used to continue scrolling.
-     */
-    public String scrollId() {
-        return scrollId;
+        return this.shardFailures;
     }
 
     /**
@@ -252,11 +192,11 @@ public class SearchResponse extends ActionResponse implements ToXContent {
             builder.field(Fields._SCROLL_ID, scrollId);
         }
         builder.field(Fields.TOOK, tookInMillis);
-        builder.field(Fields.TIMED_OUT, timedOut());
+        builder.field(Fields.TIMED_OUT, isTimedOut());
         builder.startObject(Fields._SHARDS);
-        builder.field(Fields.TOTAL, totalShards());
-        builder.field(Fields.SUCCESSFUL, successfulShards());
-        builder.field(Fields.FAILED, failedShards());
+        builder.field(Fields.TOTAL, getTotalShards());
+        builder.field(Fields.SUCCESSFUL, getSuccessfulShards());
+        builder.field(Fields.FAILED, getFailedShards());
 
         if (shardFailures.length > 0) {
             builder.startArray(Fields.FAILURES);

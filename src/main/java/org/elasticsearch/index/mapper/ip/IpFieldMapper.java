@@ -39,12 +39,13 @@ import org.elasticsearch.common.xcontent.XContentParser;
 import org.elasticsearch.index.analysis.NamedAnalyzer;
 import org.elasticsearch.index.analysis.NumericAnalyzer;
 import org.elasticsearch.index.analysis.NumericTokenizer;
+import org.elasticsearch.index.codec.docvaluesformat.DocValuesFormatProvider;
 import org.elasticsearch.index.codec.postingsformat.PostingsFormatProvider;
 import org.elasticsearch.index.fielddata.FieldDataType;
 import org.elasticsearch.index.fielddata.IndexFieldDataService;
 import org.elasticsearch.index.fielddata.IndexNumericFieldData;
 import org.elasticsearch.index.mapper.*;
-import org.elasticsearch.index.mapper.core.LongFieldMapper;
+import org.elasticsearch.index.mapper.core.LongFieldMapper.CustomLongNumericField;
 import org.elasticsearch.index.mapper.core.NumberFieldMapper;
 import org.elasticsearch.index.query.QueryParseContext;
 import org.elasticsearch.index.search.NumericRangeFieldDataFilter;
@@ -52,6 +53,7 @@ import org.elasticsearch.index.similarity.SimilarityProvider;
 
 import java.io.IOException;
 import java.io.Reader;
+import java.util.List;
 import java.util.Map;
 import java.util.regex.Pattern;
 
@@ -119,7 +121,8 @@ public class IpFieldMapper extends NumberFieldMapper<Long> {
         public IpFieldMapper build(BuilderContext context) {
             fieldType.setOmitNorms(fieldType.omitNorms() && boost == 1.0f);
             IpFieldMapper fieldMapper = new IpFieldMapper(buildNames(context),
-                    precisionStep, boost, fieldType, nullValue, ignoreMalformed(context), provider, similarity, fieldDataSettings);
+                    precisionStep, boost, fieldType, nullValue, ignoreMalformed(context), postingsProvider, docValuesProvider, similarity,
+                    fieldDataSettings, context.indexSettings());
             fieldMapper.includeInAll(includeInAll);
             return fieldMapper;
         }
@@ -145,10 +148,12 @@ public class IpFieldMapper extends NumberFieldMapper<Long> {
 
     protected IpFieldMapper(Names names, int precisionStep, float boost, FieldType fieldType,
                             String nullValue, Explicit<Boolean> ignoreMalformed,
-                            PostingsFormatProvider provider, SimilarityProvider similarity, @Nullable Settings fieldDataSettings) {
+                            PostingsFormatProvider postingsProvider, DocValuesFormatProvider docValuesProvider,
+                            SimilarityProvider similarity, @Nullable Settings fieldDataSettings, Settings indexSettings) {
         super(names, precisionStep, boost, fieldType,
                 ignoreMalformed, new NamedAnalyzer("_ip/" + precisionStep, new NumericIpAnalyzer(precisionStep)),
-                new NamedAnalyzer("_ip/max", new NumericIpAnalyzer(Integer.MAX_VALUE)), provider, similarity, fieldDataSettings);
+                new NamedAnalyzer("_ip/max", new NumericIpAnalyzer(Integer.MAX_VALUE)), postingsProvider, docValuesProvider,
+                similarity, fieldDataSettings, indexSettings);
         this.nullValue = nullValue;
     }
 
@@ -196,7 +201,7 @@ public class IpFieldMapper extends NumberFieldMapper<Long> {
     @Override
     public BytesRef indexedValueForSearch(Object value) {
         BytesRef bytesRef = new BytesRef();
-        NumericUtils.longToPrefixCoded(parseValue(value), precisionStep(), bytesRef);
+        NumericUtils.longToPrefixCoded(parseValue(value), 0, bytesRef); // 0 because of exact match
         return bytesRef;
     }
 
@@ -266,7 +271,7 @@ public class IpFieldMapper extends NumberFieldMapper<Long> {
     }
 
     @Override
-    protected Field innerParseCreateField(ParseContext context) throws IOException {
+    protected void innerParseCreateField(ParseContext context, List<Field> fields) throws IOException {
         String ipAsString;
         if (context.externalValueSet()) {
             ipAsString = (String) context.externalValue();
@@ -282,14 +287,21 @@ public class IpFieldMapper extends NumberFieldMapper<Long> {
         }
 
         if (ipAsString == null) {
-            return null;
+            return;
         }
         if (context.includeInAll(includeInAll, this)) {
             context.allEntries().addText(names.fullName(), ipAsString, boost);
         }
 
         final long value = ipToLong(ipAsString);
-        return new LongFieldMapper.CustomLongNumericField(this, value, fieldType);
+        if (fieldType.indexed() || fieldType.stored()) {
+            CustomLongNumericField field = new CustomLongNumericField(this, value, fieldType);
+            field.setBoost(boost);
+            fields.add(field);
+        }
+        if (hasDocValues()) {
+            fields.add(toDocValues(value));
+        }
     }
 
     @Override
@@ -309,17 +321,21 @@ public class IpFieldMapper extends NumberFieldMapper<Long> {
     }
 
     @Override
-    protected void doXContentBody(XContentBuilder builder) throws IOException {
-        super.doXContentBody(builder);
-        if (precisionStep != Defaults.PRECISION_STEP) {
+    protected void doXContentBody(XContentBuilder builder, boolean includeDefaults, Params params) throws IOException {
+        super.doXContentBody(builder, includeDefaults, params);
+
+        if (includeDefaults || precisionStep != Defaults.PRECISION_STEP) {
             builder.field("precision_step", precisionStep);
         }
-        if (nullValue != null) {
+        if (includeDefaults || nullValue != null) {
             builder.field("null_value", nullValue);
         }
         if (includeInAll != null) {
             builder.field("include_in_all", includeInAll);
+        } else if (includeDefaults) {
+            builder.field("include_in_all", false);
         }
+
     }
 
     public static class NumericIpAnalyzer extends NumericAnalyzer<NumericIpTokenizer> {
@@ -341,10 +357,6 @@ public class IpFieldMapper extends NumberFieldMapper<Long> {
     }
 
     public static class NumericIpTokenizer extends NumericTokenizer {
-
-        public NumericIpTokenizer(Reader reader, int precisionStep) throws IOException {
-            super(reader, new NumericTokenStream(precisionStep), null);
-        }
 
         public NumericIpTokenizer(Reader reader, int precisionStep, char[] buffer) throws IOException {
             super(reader, new NumericTokenStream(precisionStep), buffer, null);

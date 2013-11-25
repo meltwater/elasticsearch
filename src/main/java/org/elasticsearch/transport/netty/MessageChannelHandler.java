@@ -28,6 +28,7 @@ import org.elasticsearch.common.io.ThrowableObjectInputStream;
 import org.elasticsearch.common.io.stream.CachedStreamInput;
 import org.elasticsearch.common.io.stream.StreamInput;
 import org.elasticsearch.common.logging.ESLogger;
+import org.elasticsearch.common.util.concurrent.AbstractRunnable;
 import org.elasticsearch.threadpool.ThreadPool;
 import org.elasticsearch.transport.*;
 import org.elasticsearch.transport.support.TransportStatus;
@@ -43,11 +44,8 @@ import java.io.IOException;
 public class MessageChannelHandler extends SimpleChannelUpstreamHandler {
 
     private final ESLogger logger;
-
     private final ThreadPool threadPool;
-
     private final TransportServiceAdapter transportServiceAdapter;
-
     private final NettyTransport transport;
 
     public MessageChannelHandler(NettyTransport transport, ESLogger logger) {
@@ -146,7 +144,7 @@ public class MessageChannelHandler extends SimpleChannelUpstreamHandler {
         final TransportResponse response = handler.newInstance();
         try {
             response.readFrom(buffer);
-        } catch (Exception e) {
+        } catch (Throwable e) {
             handleException(handler, new TransportSerializationException("Failed to deserialize response of type [" + response.getClass().getName() + "]", e));
             return;
         }
@@ -157,7 +155,7 @@ public class MessageChannelHandler extends SimpleChannelUpstreamHandler {
             } else {
                 threadPool.executor(handler.executor()).execute(new ResponseHandler(handler, response));
             }
-        } catch (Exception e) {
+        } catch (Throwable e) {
             handleException(handler, new ResponseHandlerFailureTransportException(e));
         }
     }
@@ -167,7 +165,7 @@ public class MessageChannelHandler extends SimpleChannelUpstreamHandler {
         try {
             ThrowableObjectInputStream ois = new ThrowableObjectInputStream(buffer, transport.settings().getClassLoader());
             error = (Throwable) ois.readObject();
-        } catch (Exception e) {
+        } catch (Throwable e) {
             error = new TransportSerializationException("Failed to deserialize exception response from stream", e);
         }
         handleException(handler, error);
@@ -179,15 +177,19 @@ public class MessageChannelHandler extends SimpleChannelUpstreamHandler {
         }
         final RemoteTransportException rtx = (RemoteTransportException) error;
         if (handler.executor() == ThreadPool.Names.SAME) {
-            handler.handleException(rtx);
+            try {
+                handler.handleException(rtx);
+            } catch (Throwable e) {
+                logger.error("failed to handle exception response [{}]", e, handler);
+            }
         } else {
             threadPool.executor(handler.executor()).execute(new Runnable() {
                 @Override
                 public void run() {
                     try {
                         handler.handleException(rtx);
-                    } catch (Exception e) {
-                        logger.error("Failed to handle exception response", e);
+                    } catch (Throwable e) {
+                        logger.error("failed to handle exception response [{}]", e, handler);
                     }
                 }
             });
@@ -211,7 +213,7 @@ public class MessageChannelHandler extends SimpleChannelUpstreamHandler {
             } else {
                 threadPool.executor(handler.executor()).execute(new RequestHandler(handler, request, transportChannel, action));
             }
-        } catch (Exception e) {
+        } catch (Throwable e) {
             try {
                 transportChannel.sendResponse(e);
             } catch (IOException e1) {
@@ -242,13 +244,13 @@ public class MessageChannelHandler extends SimpleChannelUpstreamHandler {
         public void run() {
             try {
                 handler.handleResponse(response);
-            } catch (Exception e) {
+            } catch (Throwable e) {
                 handleException(handler, new ResponseHandlerFailureTransportException(e));
             }
         }
     }
 
-    class RequestHandler implements Runnable {
+    class RequestHandler extends AbstractRunnable {
         private final TransportRequestHandler handler;
         private final TransportRequest request;
         private final NettyTransportChannel transportChannel;
@@ -271,12 +273,17 @@ public class MessageChannelHandler extends SimpleChannelUpstreamHandler {
                     // we can only send a response transport is started....
                     try {
                         transportChannel.sendResponse(e);
-                    } catch (IOException e1) {
+                    } catch (Throwable e1) {
                         logger.warn("Failed to send error message back to client for action [" + action + "]", e1);
                         logger.warn("Actual Exception", e);
                     }
                 }
             }
+        }
+
+        @Override
+        public boolean isForceExecution() {
+            return handler.isForceExecution();
         }
     }
 }

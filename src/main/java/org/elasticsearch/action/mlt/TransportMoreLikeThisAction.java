@@ -41,6 +41,7 @@ import org.elasticsearch.cluster.routing.ShardIterator;
 import org.elasticsearch.cluster.routing.ShardRouting;
 import org.elasticsearch.common.inject.Inject;
 import org.elasticsearch.common.settings.Settings;
+import org.elasticsearch.index.engine.DocumentMissingException;
 import org.elasticsearch.index.get.GetField;
 import org.elasticsearch.index.mapper.*;
 import org.elasticsearch.index.mapper.internal.SourceFieldMapper;
@@ -97,7 +98,7 @@ public class TransportMoreLikeThisAction extends TransportAction<MoreLikeThisReq
 
         RoutingNode routingNode = clusterState.getRoutingNodes().nodesToShards().get(clusterService.localNode().getId());
         if (routingNode == null) {
-            redirect(request, listener, clusterState);
+            redirect(request, concreteIndex, listener, clusterState);
             return;
         }
         boolean hasIndexLocally = false;
@@ -108,7 +109,7 @@ public class TransportMoreLikeThisAction extends TransportAction<MoreLikeThisReq
             }
         }
         if (!hasIndexLocally) {
-            redirect(request, listener, clusterState);
+            redirect(request, concreteIndex, listener, clusterState);
             return;
         }
         Set<String> getFields = newHashSet();
@@ -130,8 +131,8 @@ public class TransportMoreLikeThisAction extends TransportAction<MoreLikeThisReq
         getAction.execute(getRequest, new ActionListener<GetResponse>() {
             @Override
             public void onResponse(GetResponse getResponse) {
-                if (!getResponse.exists()) {
-                    listener.onFailure(new ElasticSearchException("document missing"));
+                if (!getResponse.isExists()) {
+                    listener.onFailure(new DocumentMissingException(null, request.type(), request.id()));
                     return;
                 }
                 final BoolQueryBuilder boolBuilder = boolQuery();
@@ -156,10 +157,10 @@ public class TransportMoreLikeThisAction extends TransportAction<MoreLikeThisReq
                         // if fields are not empty, see if we got them in the response
                         for (Iterator<String> it = fields.iterator(); it.hasNext(); ) {
                             String field = it.next();
-                            GetField getField = getResponse.field(field);
+                            GetField getField = getResponse.getField(field);
                             if (getField != null) {
-                                for (Object value : getField.values()) {
-                                    addMoreLikeThis(request, boolBuilder, getField.name(), value.toString());
+                                for (Object value : getField.getValues()) {
+                                    addMoreLikeThis(request, boolBuilder, getField.getName(), value.toString(), true);
                                 }
                                 it.remove();
                             }
@@ -182,7 +183,8 @@ public class TransportMoreLikeThisAction extends TransportAction<MoreLikeThisReq
                     // exclude myself
                     Term uidTerm = docMapper.uidMapper().term(request.type(), request.id());
                     boolBuilder.mustNot(termQuery(uidTerm.field(), uidTerm.text()));
-                } catch (Exception e) {
+                    boolBuilder.adjustPureNegative(false);
+                } catch (Throwable e) {
                     listener.onFailure(e);
                     return;
                 }
@@ -233,8 +235,8 @@ public class TransportMoreLikeThisAction extends TransportAction<MoreLikeThisReq
     }
 
     // Redirects the request to a data node, that has the index meta data locally available.
-    private void redirect(MoreLikeThisRequest request, final ActionListener<SearchResponse> listener, ClusterState clusterState) {
-        ShardIterator shardIterator = clusterService.operationRouting().getShards(clusterState, request.index(), request.type(), request.id(), null, null);
+    private void redirect(MoreLikeThisRequest request, String concreteIndex, final ActionListener<SearchResponse> listener, ClusterState clusterState) {
+        ShardIterator shardIterator = clusterService.operationRouting().getShards(clusterState, concreteIndex, request.type(), request.id(), request.routing(), null);
         ShardRouting shardRouting = shardIterator.firstOrNull();
         if (shardRouting == null) {
             throw new ElasticSearchException("No shards for index " + request.index());
@@ -269,9 +271,12 @@ public class TransportMoreLikeThisAction extends TransportAction<MoreLikeThisReq
         if (getResponse.isSourceEmpty()) {
             return;
         }
-        docMapper.parse(SourceToParse.source(getResponse.sourceRef()).type(request.type()).id(request.id()), new DocumentMapper.ParseListenerAdapter() {
+        docMapper.parse(SourceToParse.source(getResponse.getSourceAsBytesRef()).type(request.type()).id(request.id()), new DocumentMapper.ParseListenerAdapter() {
             @Override
             public boolean beforeFieldAdded(FieldMapper fieldMapper, Field field, Object parseContext) {
+                if (!field.fieldType().indexed()) {
+                    return false;
+                }
                 if (fieldMapper instanceof InternalMapper) {
                     return true;
                 }
@@ -281,7 +286,7 @@ public class TransportMoreLikeThisAction extends TransportAction<MoreLikeThisReq
                 }
 
                 if (fields.isEmpty() || fields.contains(field.name())) {
-                    addMoreLikeThis(request, boolBuilder, fieldMapper, field);
+                    addMoreLikeThis(request, boolBuilder, fieldMapper, field, !fields.isEmpty());
                 }
 
                 return false;
@@ -301,11 +306,11 @@ public class TransportMoreLikeThisAction extends TransportAction<MoreLikeThisReq
         }
     }
 
-    private void addMoreLikeThis(MoreLikeThisRequest request, BoolQueryBuilder boolBuilder, FieldMapper fieldMapper, Field field) {
-        addMoreLikeThis(request, boolBuilder, field.name(), fieldMapper.value(convertField(field)).toString());
+    private void addMoreLikeThis(MoreLikeThisRequest request, BoolQueryBuilder boolBuilder, FieldMapper fieldMapper, Field field, boolean failOnUnsupportedField) {
+        addMoreLikeThis(request, boolBuilder, field.name(), fieldMapper.value(convertField(field)).toString(), failOnUnsupportedField);
     }
 
-    private void addMoreLikeThis(MoreLikeThisRequest request, BoolQueryBuilder boolBuilder, String fieldName, String likeText) {
+    private void addMoreLikeThis(MoreLikeThisRequest request, BoolQueryBuilder boolBuilder, String fieldName, String likeText, boolean failOnUnsupportedField) {
         MoreLikeThisFieldQueryBuilder mlt = moreLikeThisFieldQuery(fieldName)
                 .likeText(likeText)
                 .percentTermsToMatch(request.percentTermsToMatch())
@@ -316,7 +321,8 @@ public class TransportMoreLikeThisAction extends TransportAction<MoreLikeThisReq
                 .maxWordLen(request.maxWordLen())
                 .minTermFreq(request.minTermFreq())
                 .maxQueryTerms(request.maxQueryTerms())
-                .stopWords(request.stopWords());
+                .stopWords(request.stopWords())
+                .failOnUnsupportedField(failOnUnsupportedField);
         boolBuilder.should(mlt);
     }
 
@@ -336,7 +342,7 @@ public class TransportMoreLikeThisAction extends TransportAction<MoreLikeThisReq
                 public void onResponse(SearchResponse result) {
                     try {
                         channel.sendResponse(result);
-                    } catch (Exception e) {
+                    } catch (Throwable e) {
                         onFailure(e);
                     }
                 }

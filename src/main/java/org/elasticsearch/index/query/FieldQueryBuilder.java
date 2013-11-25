@@ -22,6 +22,7 @@ package org.elasticsearch.index.query;
 import org.elasticsearch.common.xcontent.XContentBuilder;
 
 import java.io.IOException;
+import java.util.Locale;
 
 /**
  * A query that executes the query string against a field. It is a simplified
@@ -67,6 +68,8 @@ public class FieldQueryBuilder extends BaseQueryBuilder implements BoostableQuer
     private String rewrite;
 
     private String minimumShouldMatch;
+
+    private String queryName;
 
     /**
      * A query that executes the query string against a field. It is a simplified
@@ -293,6 +296,15 @@ public class FieldQueryBuilder extends BaseQueryBuilder implements BoostableQuer
         return this;
     }
 
+    /**
+     * Sets the query name for the filter that can be used when searching for matched_filters per hit.
+     */
+    public FieldQueryBuilder queryName(String queryName) {
+        this.queryName = queryName;
+        this.extraSet = true;
+        return this;
+    }
+
     @Override
     public void doXContent(XContentBuilder builder, Params params) throws IOException {
         builder.startObject(FieldQueryParser.NAME);
@@ -302,7 +314,7 @@ public class FieldQueryBuilder extends BaseQueryBuilder implements BoostableQuer
             builder.startObject(name);
             builder.field("query", query);
             if (defaultOperator != null) {
-                builder.field("default_operator", defaultOperator.name().toLowerCase());
+                builder.field("default_operator", defaultOperator.name().toLowerCase(Locale.ROOT));
             }
             if (analyzer != null) {
                 builder.field("analyzer", analyzer);
@@ -345,6 +357,9 @@ public class FieldQueryBuilder extends BaseQueryBuilder implements BoostableQuer
             }
             if (minimumShouldMatch != null) {
                 builder.field("minimum_should_match", minimumShouldMatch);
+            }
+            if (queryName != null) {
+                builder.field("_name", queryName);
             }
             builder.endObject();
         }

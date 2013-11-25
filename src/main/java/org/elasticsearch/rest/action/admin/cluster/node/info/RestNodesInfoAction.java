@@ -23,15 +23,16 @@ import org.elasticsearch.action.ActionListener;
 import org.elasticsearch.action.admin.cluster.node.info.NodesInfoRequest;
 import org.elasticsearch.action.admin.cluster.node.info.NodesInfoResponse;
 import org.elasticsearch.client.Client;
+import org.elasticsearch.common.Strings;
 import org.elasticsearch.common.inject.Inject;
 import org.elasticsearch.common.settings.Settings;
 import org.elasticsearch.common.settings.SettingsFilter;
 import org.elasticsearch.common.xcontent.XContentBuilder;
 import org.elasticsearch.rest.*;
-import org.elasticsearch.rest.action.support.RestActions;
 import org.elasticsearch.rest.action.support.RestXContentBuilder;
 
 import java.io.IOException;
+
 
 /**
  *
@@ -73,12 +74,15 @@ public class RestNodesInfoAction extends BaseRestHandler {
         controller.registerHandler(RestRequest.Method.GET, "/_nodes/http", new RestHttpHandler());
         controller.registerHandler(RestRequest.Method.GET, "/_nodes/{nodeId}/http", new RestHttpHandler());
 
+        controller.registerHandler(RestRequest.Method.GET, "/_nodes/plugin", new RestPluginHandler());
+        controller.registerHandler(RestRequest.Method.GET, "/_nodes/{nodeId}/plugin", new RestPluginHandler());
+
         this.settingsFilter = settingsFilter;
     }
 
     @Override
     public void handleRequest(final RestRequest request, final RestChannel channel) {
-        String[] nodesIds = RestActions.splitNodes(request.param("nodeId"));
+        String[] nodesIds = Strings.splitStringByCommaToArray(request.param("nodeId"));
         final NodesInfoRequest nodesInfoRequest = new NodesInfoRequest(nodesIds);
 
         boolean clear = request.paramAsBoolean("clear", false);
@@ -97,6 +101,8 @@ public class RestNodesInfoAction extends BaseRestHandler {
         nodesInfoRequest.network(request.paramAsBoolean("network", nodesInfoRequest.network()));
         nodesInfoRequest.transport(request.paramAsBoolean("transport", nodesInfoRequest.transport()));
         nodesInfoRequest.http(request.paramAsBoolean("http", nodesInfoRequest.http()));
+        nodesInfoRequest.plugin(request.paramAsBoolean("plugin", nodesInfoRequest.plugin()));
+        nodesInfoRequest.timeout( request.paramAsTime("timeout", nodesInfoRequest.timeout()));
 
         executeNodeRequest(request, channel, nodesInfoRequest);
     }
@@ -114,7 +120,7 @@ public class RestNodesInfoAction extends BaseRestHandler {
                     response.toXContent(builder, request);
                     builder.endObject();
                     channel.sendResponse(new XContentRestResponse(request, RestStatus.OK, builder));
-                } catch (Exception e) {
+                } catch (Throwable e) {
                     onFailure(e);
                 }
             }
@@ -133,7 +139,7 @@ public class RestNodesInfoAction extends BaseRestHandler {
     class RestSettingsHandler implements RestHandler {
         @Override
         public void handleRequest(final RestRequest request, final RestChannel channel) {
-            NodesInfoRequest nodesInfoRequest = new NodesInfoRequest(RestActions.splitNodes(request.param("nodeId")));
+            NodesInfoRequest nodesInfoRequest = new NodesInfoRequest(Strings.splitStringByCommaToArray(request.param("nodeId")));
             nodesInfoRequest.clear().settings(true);
             executeNodeRequest(request, channel, nodesInfoRequest);
         }
@@ -142,7 +148,7 @@ public class RestNodesInfoAction extends BaseRestHandler {
     class RestOsHandler implements RestHandler {
         @Override
         public void handleRequest(final RestRequest request, final RestChannel channel) {
-            NodesInfoRequest nodesInfoRequest = new NodesInfoRequest(RestActions.splitNodes(request.param("nodeId")));
+            NodesInfoRequest nodesInfoRequest = new NodesInfoRequest(Strings.splitStringByCommaToArray(request.param("nodeId")));
             nodesInfoRequest.clear().os(true);
             executeNodeRequest(request, channel, nodesInfoRequest);
         }
@@ -151,7 +157,7 @@ public class RestNodesInfoAction extends BaseRestHandler {
     class RestProcessHandler implements RestHandler {
         @Override
         public void handleRequest(final RestRequest request, final RestChannel channel) {
-            NodesInfoRequest nodesInfoRequest = new NodesInfoRequest(RestActions.splitNodes(request.param("nodeId")));
+            NodesInfoRequest nodesInfoRequest = new NodesInfoRequest(Strings.splitStringByCommaToArray(request.param("nodeId")));
             nodesInfoRequest.clear().process(true);
             executeNodeRequest(request, channel, nodesInfoRequest);
         }
@@ -160,7 +166,7 @@ public class RestNodesInfoAction extends BaseRestHandler {
     class RestJvmHandler implements RestHandler {
         @Override
         public void handleRequest(final RestRequest request, final RestChannel channel) {
-            NodesInfoRequest nodesInfoRequest = new NodesInfoRequest(RestActions.splitNodes(request.param("nodeId")));
+            NodesInfoRequest nodesInfoRequest = new NodesInfoRequest(Strings.splitStringByCommaToArray(request.param("nodeId")));
             nodesInfoRequest.clear().jvm(true);
             executeNodeRequest(request, channel, nodesInfoRequest);
         }
@@ -169,7 +175,7 @@ public class RestNodesInfoAction extends BaseRestHandler {
     class RestThreadPoolHandler implements RestHandler {
         @Override
         public void handleRequest(final RestRequest request, final RestChannel channel) {
-            NodesInfoRequest nodesInfoRequest = new NodesInfoRequest(RestActions.splitNodes(request.param("nodeId")));
+            NodesInfoRequest nodesInfoRequest = new NodesInfoRequest(Strings.splitStringByCommaToArray(request.param("nodeId")));
             nodesInfoRequest.clear().threadPool(true);
             executeNodeRequest(request, channel, nodesInfoRequest);
         }
@@ -178,7 +184,7 @@ public class RestNodesInfoAction extends BaseRestHandler {
     class RestNetworkHandler implements RestHandler {
         @Override
         public void handleRequest(final RestRequest request, final RestChannel channel) {
-            NodesInfoRequest nodesInfoRequest = new NodesInfoRequest(RestActions.splitNodes(request.param("nodeId")));
+            NodesInfoRequest nodesInfoRequest = new NodesInfoRequest(Strings.splitStringByCommaToArray(request.param("nodeId")));
             nodesInfoRequest.clear().network(true);
             executeNodeRequest(request, channel, nodesInfoRequest);
         }
@@ -187,7 +193,7 @@ public class RestNodesInfoAction extends BaseRestHandler {
     class RestTransportHandler implements RestHandler {
         @Override
         public void handleRequest(final RestRequest request, final RestChannel channel) {
-            NodesInfoRequest nodesInfoRequest = new NodesInfoRequest(RestActions.splitNodes(request.param("nodeId")));
+            NodesInfoRequest nodesInfoRequest = new NodesInfoRequest(Strings.splitStringByCommaToArray(request.param("nodeId")));
             nodesInfoRequest.clear().transport(true);
             executeNodeRequest(request, channel, nodesInfoRequest);
         }
@@ -196,8 +202,17 @@ public class RestNodesInfoAction extends BaseRestHandler {
     class RestHttpHandler implements RestHandler {
         @Override
         public void handleRequest(final RestRequest request, final RestChannel channel) {
-            NodesInfoRequest nodesInfoRequest = new NodesInfoRequest(RestActions.splitNodes(request.param("nodeId")));
+            NodesInfoRequest nodesInfoRequest = new NodesInfoRequest(Strings.splitStringByCommaToArray(request.param("nodeId")));
             nodesInfoRequest.clear().http(true);
+            executeNodeRequest(request, channel, nodesInfoRequest);
+        }
+    }
+
+    class RestPluginHandler implements RestHandler {
+        @Override
+        public void handleRequest(final RestRequest request, final RestChannel channel) {
+            NodesInfoRequest nodesInfoRequest = new NodesInfoRequest(Strings.splitStringByCommaToArray(request.param("nodeId")));
+            nodesInfoRequest.clear().plugin(true);
             executeNodeRequest(request, channel, nodesInfoRequest);
         }
     }

@@ -19,14 +19,14 @@
 
 package org.elasticsearch.search.builder;
 
+import com.carrotsearch.hppc.ObjectFloatOpenHashMap;
+import com.google.common.base.Charsets;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.Lists;
-import gnu.trove.iterator.TObjectFloatIterator;
-import gnu.trove.map.hash.TObjectFloatHashMap;
 import org.elasticsearch.ElasticSearchGenerationException;
 import org.elasticsearch.client.Requests;
 import org.elasticsearch.common.Nullable;
-import org.elasticsearch.common.Unicode;
+import org.elasticsearch.common.Strings;
 import org.elasticsearch.common.bytes.BytesArray;
 import org.elasticsearch.common.bytes.BytesReference;
 import org.elasticsearch.common.unit.TimeValue;
@@ -36,8 +36,11 @@ import org.elasticsearch.common.xcontent.XContentFactory;
 import org.elasticsearch.common.xcontent.XContentType;
 import org.elasticsearch.index.query.FilterBuilder;
 import org.elasticsearch.index.query.QueryBuilder;
-import org.elasticsearch.search.facet.AbstractFacetBuilder;
+import org.elasticsearch.search.aggregations.AbstractAggregationBuilder;
+import org.elasticsearch.search.facet.FacetBuilder;
+import org.elasticsearch.search.fetch.source.FetchSourceContext;
 import org.elasticsearch.search.highlight.HighlightBuilder;
+import org.elasticsearch.search.rescore.RescoreBuilder;
 import org.elasticsearch.search.sort.SortBuilder;
 import org.elasticsearch.search.sort.SortBuilders;
 import org.elasticsearch.search.sort.SortOrder;
@@ -97,16 +100,22 @@ public class SearchSourceBuilder implements ToXContent {
     private List<String> fieldNames;
     private List<ScriptField> scriptFields;
     private List<PartialField> partialFields;
+    private FetchSourceContext fetchSourceContext;
 
-    private List<AbstractFacetBuilder> facets;
-
+    private List<FacetBuilder> facets;
     private BytesReference facetsBinary;
+
+    private List<AbstractAggregationBuilder> aggregations;
+    private BytesReference aggregationsBinary;
+
 
     private HighlightBuilder highlightBuilder;
 
     private SuggestBuilder suggestBuilder;
 
-    private TObjectFloatHashMap<String> indexBoost = null;
+    private RescoreBuilder rescoreBuilder;
+
+    private ObjectFloatOpenHashMap<String> indexBoost = null;
 
     private String[] stats;
 
@@ -153,7 +162,7 @@ public class SearchSourceBuilder implements ToXContent {
      * Constructs a new search source builder with a raw search query.
      */
     public SearchSourceBuilder query(String queryString) {
-        return query(Unicode.fromStringAsBytes(queryString));
+        return query(queryString.getBytes(Charsets.UTF_8));
     }
 
     /**
@@ -190,7 +199,7 @@ public class SearchSourceBuilder implements ToXContent {
      * (and not facets for example).
      */
     public SearchSourceBuilder filter(String filterString) {
-        return filter(Unicode.fromStringAsBytes(filterString));
+        return filter(filterString.getBytes(Charsets.UTF_8));
     }
 
     /**
@@ -338,7 +347,7 @@ public class SearchSourceBuilder implements ToXContent {
     /**
      * Add a facet to perform as part of the search.
      */
-    public SearchSourceBuilder facet(AbstractFacetBuilder facet) {
+    public SearchSourceBuilder facet(FacetBuilder facet) {
         if (facets == null) {
             facets = Lists.newArrayList();
         }
@@ -388,6 +397,59 @@ public class SearchSourceBuilder implements ToXContent {
         }
     }
 
+    /**
+     * Add an get to perform as part of the search.
+     */
+    public SearchSourceBuilder aggregation(AbstractAggregationBuilder aggregation) {
+        if (aggregations == null) {
+            aggregations = Lists.newArrayList();
+        }
+        aggregations.add(aggregation);
+        return this;
+    }
+
+    /**
+     * Sets a raw (xcontent / json) addAggregation.
+     */
+    public SearchSourceBuilder aggregations(byte[] aggregationsBinary) {
+        return aggregations(aggregationsBinary, 0, aggregationsBinary.length);
+    }
+
+    /**
+     * Sets a raw (xcontent / json) addAggregation.
+     */
+    public SearchSourceBuilder aggregations(byte[] aggregationsBinary, int aggregationsBinaryOffset, int aggregationsBinaryLength) {
+        return aggregations(new BytesArray(aggregationsBinary, aggregationsBinaryOffset, aggregationsBinaryLength));
+    }
+
+    /**
+     * Sets a raw (xcontent / json) addAggregation.
+     */
+    public SearchSourceBuilder aggregations(BytesReference aggregationsBinary) {
+        this.aggregationsBinary = aggregationsBinary;
+        return this;
+    }
+
+    /**
+     * Sets a raw (xcontent / json) addAggregation.
+     */
+    public SearchSourceBuilder aggregations(XContentBuilder facets) {
+        return aggregations(facets.bytes());
+    }
+
+    /**
+     * Sets a raw (xcontent / json) addAggregation.
+     */
+    public SearchSourceBuilder aggregations(Map aggregations) {
+        try {
+            XContentBuilder builder = XContentFactory.contentBuilder(Requests.CONTENT_TYPE);
+            builder.map(aggregations);
+            return aggregations(builder);
+        } catch (IOException e) {
+            throw new ElasticSearchGenerationException("Failed to generate [" + aggregations + "]", e);
+        }
+    }
+
     public HighlightBuilder highlighter() {
         if (highlightBuilder == null) {
             highlightBuilder = new HighlightBuilder();
@@ -405,9 +467,62 @@ public class SearchSourceBuilder implements ToXContent {
 
     public SuggestBuilder suggest() {
         if (suggestBuilder == null) {
-            suggestBuilder = new SuggestBuilder();
+            suggestBuilder = new SuggestBuilder("suggest");
         }
         return suggestBuilder;
+    }
+
+    public RescoreBuilder rescore() {
+        if (rescoreBuilder == null) {
+            rescoreBuilder = new RescoreBuilder();
+        }
+        return rescoreBuilder;
+    }
+
+    /**
+     * Indicates whether the response should contain the stored _source for every hit
+     *
+     * @param fetch
+     * @return
+     */
+    public SearchSourceBuilder fetchSource(boolean fetch) {
+        if (this.fetchSourceContext == null) {
+            this.fetchSourceContext = new FetchSourceContext(fetch);
+        } else {
+            this.fetchSourceContext.fetchSource(fetch);
+        }
+        return this;
+    }
+
+    /**
+     * Indicate that _source should be returned with every hit, with an "include" and/or "exclude" set which can include simple wildcard
+     * elements.
+     *
+     * @param include An optional include (optionally wildcarded) pattern to filter the returned _source
+     * @param exclude An optional exclude (optionally wildcarded) pattern to filter the returned _source
+     */
+    public SearchSourceBuilder fetchSource(@Nullable String include, @Nullable String exclude) {
+        return fetchSource(include == null ? Strings.EMPTY_ARRAY : new String[]{include}, include == null ? Strings.EMPTY_ARRAY : new String[]{exclude});
+    }
+
+    /**
+     * Indicate that _source should be returned with every hit, with an "include" and/or "exclude" set which can include simple wildcard
+     * elements.
+     *
+     * @param includes An optional list of include (optionally wildcarded) pattern to filter the returned _source
+     * @param excludes An optional list of exclude (optionally wildcarded) pattern to filter the returned _source
+     */
+    public SearchSourceBuilder fetchSource(@Nullable String[] includes, @Nullable String[] excludes) {
+        fetchSourceContext = new FetchSourceContext(includes, excludes);
+        return this;
+    }
+
+    /**
+     * Indicate how the _source should be fetched.
+     */
+    public SearchSourceBuilder fetchSource(@Nullable FetchSourceContext fetchSourceContext) {
+        this.fetchSourceContext = fetchSourceContext;
+        return this;
     }
 
     /**
@@ -531,7 +646,7 @@ public class SearchSourceBuilder implements ToXContent {
      */
     public SearchSourceBuilder indexBoost(String index, float indexBoost) {
         if (this.indexBoost == null) {
-            this.indexBoost = new TObjectFloatHashMap<String>();
+            this.indexBoost = new ObjectFloatOpenHashMap<String>();
         }
         this.indexBoost.put(index, indexBoost);
         return this;
@@ -624,6 +739,17 @@ public class SearchSourceBuilder implements ToXContent {
             builder.field("explain", explain);
         }
 
+        if (fetchSourceContext != null) {
+            if (!fetchSourceContext.fetchSource()) {
+                builder.field("_source", false);
+            } else {
+                builder.startObject("_source");
+                builder.array("includes", fetchSourceContext.includes());
+                builder.array("excludes", fetchSourceContext.excludes());
+                builder.endObject();
+            }
+        }
+
         if (fieldNames != null) {
             if (fieldNames.size() == 1) {
                 builder.field("fields", fieldNames.get(0));
@@ -684,16 +810,21 @@ public class SearchSourceBuilder implements ToXContent {
                 builder.endObject();
             }
             builder.endArray();
-            if (trackScores) {
-                builder.field("track_scores", trackScores);
-            }
+        }
+
+        if (trackScores) {
+            builder.field("track_scores", trackScores);
         }
 
         if (indexBoost != null) {
             builder.startObject("indices_boost");
-            for (TObjectFloatIterator<String> it = indexBoost.iterator(); it.hasNext(); ) {
-                it.advance();
-                builder.field(it.key(), it.value());
+            final boolean[] states = indexBoost.allocated;
+            final Object[] keys = indexBoost.keys;
+            final float[] values = indexBoost.values;
+            for (int i = 0; i < states.length; i++) {
+                if (states[i]) {
+                    builder.field((String) keys[i], values[i]);
+                }
             }
             builder.endObject();
         }
@@ -701,7 +832,7 @@ public class SearchSourceBuilder implements ToXContent {
         if (facets != null) {
             builder.field("facets");
             builder.startObject();
-            for (AbstractFacetBuilder facet : facets) {
+            for (FacetBuilder facet : facets) {
                 facet.toXContent(builder, params);
             }
             builder.endObject();
@@ -715,12 +846,33 @@ public class SearchSourceBuilder implements ToXContent {
             }
         }
 
+        if (aggregations != null) {
+            builder.field("aggregations");
+            builder.startObject();
+            for (AbstractAggregationBuilder aggregation : aggregations) {
+                aggregation.toXContent(builder, params);
+            }
+            builder.endObject();
+        }
+
+        if (aggregationsBinary != null) {
+            if (XContentFactory.xContentType(aggregationsBinary) == builder.contentType()) {
+                builder.rawField("aggregations", aggregationsBinary);
+            } else {
+                builder.field("aggregations_binary", aggregationsBinary);
+            }
+        }
+
         if (highlightBuilder != null) {
             highlightBuilder.toXContent(builder, params);
         }
 
         if (suggestBuilder != null) {
             suggestBuilder.toXContent(builder, params);
+        }
+
+        if (rescoreBuilder != null) {
+            rescoreBuilder.toXContent(builder, params);
         }
 
         if (stats != null) {

@@ -19,10 +19,14 @@
 
 package org.elasticsearch.search.facet.datehistogram;
 
-import org.elasticsearch.common.CacheRecycler;
+import com.carrotsearch.hppc.LongObjectOpenHashMap;
+import org.apache.lucene.util.CollectionUtil;
+import org.elasticsearch.common.Strings;
+import org.elasticsearch.common.bytes.BytesReference;
+import org.elasticsearch.common.bytes.HashedBytesArray;
 import org.elasticsearch.common.io.stream.StreamInput;
 import org.elasticsearch.common.io.stream.StreamOutput;
-import org.elasticsearch.common.trove.ExtTLongObjectHashMap;
+import org.elasticsearch.common.recycler.Recycler;
 import org.elasticsearch.common.xcontent.XContentBuilder;
 import org.elasticsearch.common.xcontent.XContentBuilderString;
 import org.elasticsearch.search.facet.Facet;
@@ -35,7 +39,7 @@ import java.util.*;
  */
 public class InternalFullDateHistogramFacet extends InternalDateHistogramFacet {
 
-    private static final String STREAM_TYPE = "fdHistogram";
+    private static final BytesReference STREAM_TYPE = new HashedBytesArray(Strings.toUTF8Bytes("fdHistogram"));
 
     public static void registerStreams() {
         Streams.registerStream(STREAM, STREAM_TYPE);
@@ -43,13 +47,13 @@ public class InternalFullDateHistogramFacet extends InternalDateHistogramFacet {
 
     static Stream STREAM = new Stream() {
         @Override
-        public Facet readFacet(String type, StreamInput in) throws IOException {
+        public Facet readFacet(StreamInput in) throws IOException {
             return readHistogramFacet(in);
         }
     };
 
     @Override
-    public String streamType() {
+    public BytesReference streamType() {
         return STREAM_TYPE;
     }
 
@@ -75,61 +79,31 @@ public class InternalFullDateHistogramFacet extends InternalDateHistogramFacet {
         }
 
         @Override
-        public long time() {
+        public long getTime() {
             return time;
         }
 
         @Override
-        public long getTime() {
-            return time();
-        }
-
-        @Override
-        public long count() {
+        public long getCount() {
             return count;
         }
 
         @Override
-        public long getCount() {
-            return count();
-        }
-
-        @Override
-        public double total() {
+        public double getTotal() {
             return total;
         }
 
         @Override
-        public double getTotal() {
-            return total();
-        }
-
-        @Override
-        public long totalCount() {
+        public long getTotalCount() {
             return totalCount;
         }
 
         @Override
-        public long getTotalCount() {
-            return this.totalCount;
-        }
-
-        @Override
-        public double mean() {
+        public double getMean() {
             if (totalCount == 0) {
                 return totalCount;
             }
             return total / totalCount;
-        }
-
-        @Override
-        public double getMean() {
-            return total / totalCount;
-        }
-
-        @Override
-        public double min() {
-            return this.min;
         }
 
         @Override
@@ -138,98 +112,54 @@ public class InternalFullDateHistogramFacet extends InternalDateHistogramFacet {
         }
 
         @Override
-        public double max() {
-            return this.max;
-        }
-
-        @Override
         public double getMax() {
             return this.max;
         }
     }
 
-    private String name;
-
     private ComparatorType comparatorType;
+    List<FullEntry> entries;
 
-    ExtTLongObjectHashMap<FullEntry> tEntries;
-    boolean cachedEntries;
-    Collection<FullEntry> entries;
-
-    private InternalFullDateHistogramFacet() {
+    InternalFullDateHistogramFacet() {
     }
 
-    public InternalFullDateHistogramFacet(String name, ComparatorType comparatorType, ExtTLongObjectHashMap<InternalFullDateHistogramFacet.FullEntry> entries, boolean cachedEntries) {
-        this.name = name;
+    InternalFullDateHistogramFacet(String name) {
+        super(name);
+    }
+
+    public InternalFullDateHistogramFacet(String name, ComparatorType comparatorType, List<FullEntry> entries) {
+        super(name);
         this.comparatorType = comparatorType;
-        this.tEntries = entries;
-        this.cachedEntries = cachedEntries;
-        this.entries = entries.valueCollection();
-    }
-
-    @Override
-    public String name() {
-        return this.name;
-    }
-
-    @Override
-    public String getName() {
-        return name();
-    }
-
-    @Override
-    public String type() {
-        return TYPE;
-    }
-
-    @Override
-    public String getType() {
-        return type();
-    }
-
-    @Override
-    public List<FullEntry> entries() {
-        if (!(entries instanceof List)) {
-            entries = new ArrayList<FullEntry>(entries);
-        }
-        return (List<FullEntry>) entries;
+        this.entries = entries;
     }
 
     @Override
     public List<FullEntry> getEntries() {
-        return entries();
+        return entries;
     }
 
     @Override
     public Iterator<Entry> iterator() {
-        return (Iterator) entries().iterator();
-    }
-
-    void releaseCache() {
-        if (cachedEntries) {
-            CacheRecycler.pushLongObjectMap(tEntries);
-            cachedEntries = false;
-            tEntries = null;
-        }
+        return (Iterator) getEntries().iterator();
     }
 
     @Override
-    public Facet reduce(List<Facet> facets) {
+    public Facet reduce(ReduceContext context) {
+        List<Facet> facets = context.facets();
         if (facets.size() == 1) {
             // we need to sort it
             InternalFullDateHistogramFacet internalFacet = (InternalFullDateHistogramFacet) facets.get(0);
-            List<FullEntry> entries = internalFacet.entries();
-            Collections.sort(entries, comparatorType.comparator());
-            internalFacet.releaseCache();
+            List<FullEntry> entries = internalFacet.getEntries();
+            CollectionUtil.timSort(entries, comparatorType.comparator());
             return internalFacet;
         }
 
-        ExtTLongObjectHashMap<FullEntry> map = CacheRecycler.popLongObjectMap();
+        Recycler.V<LongObjectOpenHashMap<FullEntry>> map = context.cacheRecycler().longObjectMap(-1);
 
         for (Facet facet : facets) {
             InternalFullDateHistogramFacet histoFacet = (InternalFullDateHistogramFacet) facet;
             for (FullEntry fullEntry : histoFacet.entries) {
-                FullEntry current = map.get(fullEntry.time);
+                FullEntry current = map.v().get(fullEntry.time);
                 if (current != null) {
                     current.count += fullEntry.count;
                     current.total += fullEntry.total;
@@ -241,17 +171,17 @@ public class InternalFullDateHistogramFacet extends InternalDateHistogramFacet {
                         current.max = fullEntry.max;
                     }
                 } else {
-                    map.put(fullEntry.time, fullEntry);
+                    map.v().put(fullEntry.time, fullEntry);
                 }
             }
-            histoFacet.releaseCache();
         }
 
         // sort
-        Object[] values = map.internalValues();
+        // TODO: hppc - not happy with toArray
+        Object[] values = map.v().values().toArray();
         Arrays.sort(values, (Comparator) comparatorType.comparator());
-        List<FullEntry> ordered = new ArrayList<FullEntry>(map.size());
-        for (int i = 0; i < map.size(); i++) {
+        List<FullEntry> ordered = new ArrayList<FullEntry>(map.v().size());
+        for (int i = 0; i < map.v().size(); i++) {
             FullEntry value = (FullEntry) values[i];
             if (value == null) {
                 break;
@@ -259,11 +189,10 @@ public class InternalFullDateHistogramFacet extends InternalDateHistogramFacet {
             ordered.add(value);
         }
 
-        CacheRecycler.pushLongObjectMap(map);
+        map.release();
 
         // just initialize it as already ordered facet
-        InternalFullDateHistogramFacet ret = new InternalFullDateHistogramFacet();
-        ret.name = name;
+        InternalFullDateHistogramFacet ret = new InternalFullDateHistogramFacet(getName());
         ret.comparatorType = comparatorType;
         ret.entries = ordered;
         return ret;
@@ -283,18 +212,18 @@ public class InternalFullDateHistogramFacet extends InternalDateHistogramFacet {
 
     @Override
     public XContentBuilder toXContent(XContentBuilder builder, Params params) throws IOException {
-        builder.startObject(name);
+        builder.startObject(getName());
         builder.field(Fields._TYPE, TYPE);
         builder.startArray(Fields.ENTRIES);
-        for (Entry entry : entries()) {
+        for (Entry entry : getEntries()) {
             builder.startObject();
-            builder.field(Fields.TIME, entry.time());
-            builder.field(Fields.COUNT, entry.count());
-            builder.field(Fields.MIN, entry.min());
-            builder.field(Fields.MAX, entry.max());
-            builder.field(Fields.TOTAL, entry.total());
-            builder.field(Fields.TOTAL_COUNT, entry.totalCount());
-            builder.field(Fields.MEAN, entry.mean());
+            builder.field(Fields.TIME, entry.getTime());
+            builder.field(Fields.COUNT, entry.getCount());
+            builder.field(Fields.MIN, entry.getMin());
+            builder.field(Fields.MAX, entry.getMax());
+            builder.field(Fields.TOTAL, entry.getTotal());
+            builder.field(Fields.TOTAL_COUNT, entry.getTotalCount());
+            builder.field(Fields.MEAN, entry.getMean());
             builder.endObject();
         }
         builder.endArray();
@@ -310,10 +239,8 @@ public class InternalFullDateHistogramFacet extends InternalDateHistogramFacet {
 
     @Override
     public void readFrom(StreamInput in) throws IOException {
-        name = in.readString();
+        super.readFrom(in);
         comparatorType = ComparatorType.fromId(in.readByte());
-
-        cachedEntries = false;
         int size = in.readVInt();
         entries = new ArrayList<FullEntry>(size);
         for (int i = 0; i < size; i++) {
@@ -323,7 +250,7 @@ public class InternalFullDateHistogramFacet extends InternalDateHistogramFacet {
 
     @Override
     public void writeTo(StreamOutput out) throws IOException {
-        out.writeString(name);
+        super.writeTo(out);
         out.writeByte(comparatorType.id());
         out.writeVInt(entries.size());
         for (FullEntry entry : entries) {
@@ -334,6 +261,5 @@ public class InternalFullDateHistogramFacet extends InternalDateHistogramFacet {
             out.writeVLong(entry.totalCount);
             out.writeDouble(entry.total);
         }
-        releaseCache();
     }
 }

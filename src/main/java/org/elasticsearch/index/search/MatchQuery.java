@@ -25,16 +25,14 @@ import org.apache.lucene.analysis.TokenStream;
 import org.apache.lucene.analysis.tokenattributes.CharTermAttribute;
 import org.apache.lucene.analysis.tokenattributes.PositionIncrementAttribute;
 import org.apache.lucene.index.Term;
-import org.apache.lucene.queries.CommonTermsQuery;
 import org.apache.lucene.queries.ExtendedCommonTermsQuery;
 import org.apache.lucene.search.*;
+import org.apache.lucene.search.BooleanClause.Occur;
 import org.apache.lucene.util.BytesRef;
 import org.apache.lucene.util.UnicodeUtil;
 import org.elasticsearch.ElasticSearchIllegalArgumentException;
 import org.elasticsearch.ElasticSearchIllegalStateException;
 import org.elasticsearch.common.Nullable;
-import org.elasticsearch.common.io.FastStringReader;
-import org.elasticsearch.common.lucene.search.MatchNoDocsQuery;
 import org.elasticsearch.common.lucene.search.MultiPhrasePrefixQuery;
 import org.elasticsearch.common.lucene.search.Queries;
 import org.elasticsearch.index.mapper.FieldMapper;
@@ -201,7 +199,7 @@ public class MatchQuery {
         }
 
         // Logic similar to QueryParser#getFieldQuery
-        final TokenStream source = analyzer.tokenStream(field, new FastStringReader(value.toString()));
+        final TokenStream source = analyzer.tokenStream(field, value.toString());
         source.reset();
         int numTokens = 0;
         int positionCount = 0;
@@ -242,6 +240,28 @@ public class MatchQuery {
                     assert hasNext == true;
                     q.add(new Term(field, termToByteRef(termAtt)));
                 }
+                return wrapSmartNameQuery(q, smartNameFieldMappers, parseContext);
+            } if (severalTokensAtSamePosition && occur == Occur.MUST) {
+                BooleanQuery q = new BooleanQuery(positionCount == 1);
+                Query currentQuery = null;
+                for (int i = 0; i < numTokens; i++) {
+                    boolean hasNext = buffer.incrementToken();
+                    assert hasNext == true;
+                  if (posIncrAtt != null && posIncrAtt.getPositionIncrement() == 0) {
+                    if (!(currentQuery instanceof BooleanQuery)) {
+                      Query t = currentQuery;
+                      currentQuery = new BooleanQuery(true);
+                      ((BooleanQuery)currentQuery).add(t, BooleanClause.Occur.SHOULD);
+                    }
+                    ((BooleanQuery)currentQuery).add(newTermQuery(mapper, new Term(field, termToByteRef(termAtt))), BooleanClause.Occur.SHOULD);
+                  } else {
+                    if (currentQuery != null) {
+                      q.add(currentQuery, occur);
+                    }
+                    currentQuery = newTermQuery(mapper, new Term(field, termToByteRef(termAtt)));
+                  }
+                }
+                q.add(currentQuery, occur);
                 return wrapSmartNameQuery(q, smartNameFieldMappers, parseContext);
             } else {
                 BooleanQuery q = new BooleanQuery(positionCount == 1);
@@ -369,6 +389,6 @@ public class MatchQuery {
     }
 
     protected Query zeroTermsQuery() {
-        return zeroTermsQuery == ZeroTermsQuery.NONE ? MatchNoDocsQuery.INSTANCE : Queries.MATCH_ALL_QUERY;
+        return zeroTermsQuery == ZeroTermsQuery.NONE ? Queries.newMatchNoDocsQuery() : Queries.newMatchAllQuery();
     }
 }

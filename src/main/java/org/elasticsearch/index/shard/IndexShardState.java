@@ -27,9 +27,19 @@ import org.elasticsearch.ElasticSearchIllegalArgumentException;
 public enum IndexShardState {
     CREATED((byte) 0),
     RECOVERING((byte) 1),
-    STARTED((byte) 2),
-    RELOCATED((byte) 3),
-    CLOSED((byte) 4);
+    POST_RECOVERY((byte) 2),
+    STARTED((byte) 3),
+    RELOCATED((byte) 4),
+    CLOSED((byte) 5);
+
+    private static final IndexShardState[] IDS = new IndexShardState[IndexShardState.values().length];
+
+    static {
+        for (IndexShardState state : IndexShardState.values()) {
+            assert state.id() < IDS.length && state.id() >= 0;
+            IDS[state.id()] = state;
+        }
+    }
 
     private final byte id;
 
@@ -42,17 +52,9 @@ public enum IndexShardState {
     }
 
     public static IndexShardState fromId(byte id) throws ElasticSearchIllegalArgumentException {
-        if (id == 0) {
-            return CREATED;
-        } else if (id == 1) {
-            return RECOVERING;
-        } else if (id == 2) {
-            return STARTED;
-        } else if (id == 3) {
-            return RELOCATED;
-        } else if (id == 4) {
-            return CLOSED;
+        if (id < 0 || id >= IDS.length) {
+            throw new ElasticSearchIllegalArgumentException("No mapping for id [" + id + "]");
         }
-        throw new ElasticSearchIllegalArgumentException("No mapping for id [" + id + "]");
+        return IDS[id];
     }
 }

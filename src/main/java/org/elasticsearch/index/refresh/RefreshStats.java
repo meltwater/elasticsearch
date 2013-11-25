@@ -60,21 +60,21 @@ public class RefreshStats implements Streamable, ToXContent {
     /**
      * The total number of refresh executed.
      */
-    public long total() {
+    public long getTotal() {
         return this.total;
     }
 
     /**
      * The total time merges have been executed (in milliseconds).
      */
-    public long totalTimeInMillis() {
+    public long getTotalTimeInMillis() {
         return this.totalTimeInMillis;
     }
 
     /**
      * The total time merges have been executed.
      */
-    public TimeValue totalTime() {
+    public TimeValue getTotalTime() {
         return new TimeValue(totalTimeInMillis);
     }
 
@@ -88,8 +88,7 @@ public class RefreshStats implements Streamable, ToXContent {
     public XContentBuilder toXContent(XContentBuilder builder, Params params) throws IOException {
         builder.startObject(Fields.REFRESH);
         builder.field(Fields.TOTAL, total);
-        builder.field(Fields.TOTAL_TIME, totalTime().toString());
-        builder.field(Fields.TOTAL_TIME_IN_MILLIS, totalTimeInMillis);
+        builder.timeValueField(Fields.TOTAL_TIME_IN_MILLIS, Fields.TOTAL_TIME, totalTimeInMillis);
         builder.endObject();
         return builder;
     }

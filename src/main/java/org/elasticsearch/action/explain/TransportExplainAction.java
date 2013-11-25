@@ -22,7 +22,9 @@ package org.elasticsearch.action.explain;
 import org.apache.lucene.index.Term;
 import org.apache.lucene.search.Explanation;
 import org.elasticsearch.ElasticSearchException;
+import org.elasticsearch.action.ActionListener;
 import org.elasticsearch.action.support.single.shard.TransportShardSingleOperationAction;
+import org.elasticsearch.cache.recycler.CacheRecycler;
 import org.elasticsearch.cluster.ClusterService;
 import org.elasticsearch.cluster.ClusterState;
 import org.elasticsearch.cluster.block.ClusterBlockException;
@@ -42,8 +44,11 @@ import org.elasticsearch.index.service.IndexService;
 import org.elasticsearch.index.shard.service.IndexShard;
 import org.elasticsearch.indices.IndicesService;
 import org.elasticsearch.script.ScriptService;
+import org.elasticsearch.search.internal.DefaultSearchContext;
 import org.elasticsearch.search.internal.SearchContext;
 import org.elasticsearch.search.internal.ShardSearchRequest;
+import org.elasticsearch.search.rescore.RescoreSearchContext;
+import org.elasticsearch.search.rescore.Rescorer;
 import org.elasticsearch.threadpool.ThreadPool;
 import org.elasticsearch.transport.TransportService;
 
@@ -59,13 +64,22 @@ public class TransportExplainAction extends TransportShardSingleOperationAction<
 
     private final ScriptService scriptService;
 
+    private final CacheRecycler cacheRecycler;
+
     @Inject
     public TransportExplainAction(Settings settings, ThreadPool threadPool, ClusterService clusterService,
                                   TransportService transportService, IndicesService indicesService,
-                                  ScriptService scriptService) {
+                                  ScriptService scriptService, CacheRecycler cacheRecycler) {
         super(settings, threadPool, clusterService, transportService);
         this.indicesService = indicesService;
         this.scriptService = scriptService;
+        this.cacheRecycler = cacheRecycler;
+    }
+
+    @Override
+    protected void doExecute(ExplainRequest request, ActionListener<ExplainResponse> listener) {
+        request.nowInMillis = System.currentTimeMillis();
+        super.doExecute(request, listener);
     }
 
     protected String transportAction() {
@@ -92,29 +106,33 @@ public class TransportExplainAction extends TransportShardSingleOperationAction<
             return new ExplainResponse(false);
         }
 
-        SearchContext context = new SearchContext(
+        SearchContext context = new DefaultSearchContext(
                 0,
                 new ShardSearchRequest().types(new String[]{request.type()})
-                        .filteringAliases(request.filteringAlias()),
+                        .filteringAliases(request.filteringAlias())
+                        .nowInMillis(request.nowInMillis),
                 null, result.searcher(), indexService, indexShard,
-                scriptService
+                scriptService, cacheRecycler
         );
         SearchContext.setCurrent(context);
 
         try {
             context.parsedQuery(parseQuery(request, indexService));
             context.preProcess();
-            int topLevelDocId = result.docIdAndVersion().docId + result.docIdAndVersion().reader.docBase;
-
-            Explanation explanation = context.searcher().explain(context.query(), topLevelDocId);
-            if (request.fields() != null) {
-                if (request.fields().length == 1 && "_source".equals(request.fields()[0])) {
-                    request.fields(null); // Load the _source field
-                }
+            int topLevelDocId = result.docIdAndVersion().docId + result.docIdAndVersion().context.docBase;
+            Explanation explanation;
+            if (context.rescore() != null) {
+                RescoreSearchContext ctx = context.rescore();
+                Rescorer rescorer = ctx.rescorer();
+                explanation = rescorer.explain(topLevelDocId, context, ctx);
+            } else {
+                explanation = context.searcher().explain(context.query(), topLevelDocId);
+            }
+            if (request.fields() != null || (request.fetchSourceContext() != null && request.fetchSourceContext().fetchSource())) {
                 // Advantage is that we're not opening a second searcher to retrieve the _source. Also
                 // because we are working in the same searcher in engineGetResult we can be sure that a
                 // doc isn't deleted between the initial get and this call.
-                GetResult getResult = indexShard.getService().get(result, request.id(), request.type(), request.fields());
+                GetResult getResult = indexShard.getService().get(result, request.id(), request.type(), request.fields(), request.fetchSourceContext());
                 return new ExplainResponse(true, explanation, getResult);
             } else {
                 return new ExplainResponse(true, explanation);

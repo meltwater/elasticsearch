@@ -24,11 +24,11 @@ import org.elasticsearch.action.search.MultiSearchRequest;
 import org.elasticsearch.action.search.MultiSearchResponse;
 import org.elasticsearch.action.support.IgnoreIndices;
 import org.elasticsearch.client.Client;
+import org.elasticsearch.common.Strings;
 import org.elasticsearch.common.inject.Inject;
 import org.elasticsearch.common.settings.Settings;
 import org.elasticsearch.common.xcontent.XContentBuilder;
 import org.elasticsearch.rest.*;
-import org.elasticsearch.rest.action.support.RestActions;
 
 import java.io.IOException;
 
@@ -42,6 +42,8 @@ import static org.elasticsearch.rest.action.support.RestXContentBuilder.restCont
  */
 public class RestMultiSearchAction extends BaseRestHandler {
 
+    private final boolean allowExplicitIndex;
+
     @Inject
     public RestMultiSearchAction(Settings settings, Client client, RestController controller) {
         super(settings, client);
@@ -52,6 +54,8 @@ public class RestMultiSearchAction extends BaseRestHandler {
         controller.registerHandler(POST, "/{index}/_msearch", this);
         controller.registerHandler(GET, "/{index}/{type}/_msearch", this);
         controller.registerHandler(POST, "/{index}/{type}/_msearch", this);
+
+        this.allowExplicitIndex = settings.getAsBoolean("rest.action.multi.allow_explicit_index", true);
     }
 
     @Override
@@ -59,15 +63,15 @@ public class RestMultiSearchAction extends BaseRestHandler {
         MultiSearchRequest multiSearchRequest = new MultiSearchRequest();
         multiSearchRequest.listenerThreaded(false);
 
-        String[] indices = RestActions.splitIndices(request.param("index"));
-        String[] types = RestActions.splitTypes(request.param("type"));
+        String[] indices = Strings.splitStringByCommaToArray(request.param("index"));
+        String[] types = Strings.splitStringByCommaToArray(request.param("type"));
         IgnoreIndices ignoreIndices = null;
         if (request.hasParam("ignore_indices")) {
             ignoreIndices = IgnoreIndices.fromString(request.param("ignore_indices"));
         }
 
         try {
-            multiSearchRequest.add(request.content(), request.contentUnsafe(), indices, types, request.param("search_type"), ignoreIndices);
+            multiSearchRequest.add(request.content(), request.contentUnsafe(), indices, types, request.param("search_type"), request.param("routing"), ignoreIndices, allowExplicitIndex);
         } catch (Exception e) {
             try {
                 XContentBuilder builder = restContentBuilder(request);
@@ -87,7 +91,7 @@ public class RestMultiSearchAction extends BaseRestHandler {
                     response.toXContent(builder, request);
                     builder.endObject();
                     channel.sendResponse(new XContentRestResponse(request, OK, builder));
-                } catch (Exception e) {
+                } catch (Throwable e) {
                     onFailure(e);
                 }
             }

@@ -21,10 +21,10 @@ package org.elasticsearch.index.mapper;
 
 import org.apache.lucene.analysis.Analyzer;
 import org.apache.lucene.document.Document;
+import org.apache.lucene.document.Field;
 import org.elasticsearch.common.Nullable;
 import org.elasticsearch.common.bytes.BytesReference;
 import org.elasticsearch.common.lucene.all.AllEntries;
-import org.elasticsearch.common.lucene.uid.UidField;
 import org.elasticsearch.common.settings.Settings;
 import org.elasticsearch.common.xcontent.XContentParser;
 import org.elasticsearch.index.analysis.AnalysisService;
@@ -66,13 +66,14 @@ public class ParseContext {
 
     private DocumentMapper.ParseListener listener;
 
-    private UidField uid;
+    private Field uid, version;
 
     private StringBuilder stringBuilder = new StringBuilder();
 
     private Map<String, String> ignoredValues = new HashMap<String, String>();
 
     private boolean mappingsModified = false;
+    private boolean withinNewMapper = false;
 
     private boolean externalValueSet;
 
@@ -81,9 +82,6 @@ public class ParseContext {
     private AllEntries allEntries = new AllEntries();
 
     private float docBoost = 1.0f;
-
-    private FieldMapperListener.Aggregator newFieldMappers = new FieldMapperListener.Aggregator();
-    private ObjectMapperListener.Aggregator newObjectMappers = new ObjectMapperListener.Aggregator();
 
     public ParseContext(String index, @Nullable Settings indexSettings, DocumentMapperParser docMapperParser, DocumentMapper docMapper, ContentPath path) {
         this.index = index;
@@ -104,29 +102,21 @@ public class ParseContext {
         }
         this.analyzer = null;
         this.uid = null;
+        this.version = null;
         this.id = null;
         this.sourceToParse = source;
         this.source = source == null ? null : sourceToParse.source();
         this.path.reset();
         this.mappingsModified = false;
+        this.withinNewMapper = false;
         this.listener = listener == null ? DocumentMapper.ParseListener.EMPTY : listener;
         this.allEntries = new AllEntries();
         this.ignoredValues.clear();
         this.docBoost = 1.0f;
-        this.newFieldMappers.mappers.clear();
-        this.newObjectMappers.mappers.clear();
     }
 
     public boolean flyweight() {
         return sourceToParse.flyweight();
-    }
-
-    public FieldMapperListener.Aggregator newFieldMappers() {
-        return newFieldMappers;
-    }
-
-    public ObjectMapperListener.Aggregator newObjectMappers() {
-        return newObjectMappers;
     }
 
     public DocumentMapperParser docMapperParser() {
@@ -139,6 +129,18 @@ public class ParseContext {
 
     public void setMappingsModified() {
         this.mappingsModified = true;
+    }
+
+    public void setWithinNewMapper() {
+        this.withinNewMapper = true;
+    }
+
+    public void clearWithinNewMapper() {
+        this.withinNewMapper = false;
+    }
+
+    public boolean isWithinNewMapper() {
+        return withinNewMapper;
     }
 
     public String index() {
@@ -232,15 +234,23 @@ public class ParseContext {
         this.id = id;
     }
 
-    public UidField uid() {
+    public Field uid() {
         return this.uid;
     }
 
     /**
      * Really, just the uid mapper should set this.
      */
-    public void uid(UidField uid) {
+    public void uid(Field uid) {
         this.uid = uid;
+    }
+
+    public Field version() {
+        return this.version;
+    }
+
+    public void version(Field version) {
+        this.version = version;
     }
 
     public boolean includeInAll(Boolean includeInAll, FieldMapper mapper) {

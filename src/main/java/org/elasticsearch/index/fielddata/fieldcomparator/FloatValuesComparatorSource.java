@@ -31,12 +31,14 @@ import java.io.IOException;
  */
 public class FloatValuesComparatorSource extends IndexFieldData.XFieldComparatorSource {
 
-    private final IndexNumericFieldData indexFieldData;
+    private final IndexNumericFieldData<?> indexFieldData;
     private final Object missingValue;
+    private final SortMode sortMode;
 
-    public FloatValuesComparatorSource(IndexNumericFieldData indexFieldData, @Nullable Object missingValue) {
+    public FloatValuesComparatorSource(IndexNumericFieldData<?> indexFieldData, @Nullable Object missingValue, SortMode sortMode) {
         this.indexFieldData = indexFieldData;
         this.missingValue = missingValue;
+        this.sortMode = sortMode;
     }
 
     @Override
@@ -48,15 +50,7 @@ public class FloatValuesComparatorSource extends IndexFieldData.XFieldComparator
     public FieldComparator<?> newComparator(String fieldname, int numHits, int sortPos, boolean reversed) throws IOException {
         assert fieldname.equals(indexFieldData.getFieldNames().indexName());
 
-        float dMissingValue;
-        if (missingValue == null || "_last".equals(missingValue)) {
-            dMissingValue = reversed ? Float.NEGATIVE_INFINITY : Float.POSITIVE_INFINITY;
-        } else if ("_first".equals(missingValue)) {
-            dMissingValue = reversed ? Float.POSITIVE_INFINITY : Float.NEGATIVE_INFINITY;
-        } else {
-            dMissingValue = missingValue instanceof Number ? ((Number) missingValue).floatValue() : Float.parseFloat(missingValue.toString());
-        }
-
-        return new FloatValuesComparator(indexFieldData, dMissingValue, numHits);
+        final float dMissingValue = (Float) missingObject(missingValue, reversed);
+        return new FloatValuesComparator(indexFieldData, dMissingValue, numHits, sortMode);
     }
 }

@@ -21,10 +21,12 @@ package org.elasticsearch.action.admin.indices.validate.query;
 
 import jsr166y.ThreadLocalRandom;
 import org.elasticsearch.ElasticSearchException;
+import org.elasticsearch.action.ActionListener;
 import org.elasticsearch.action.ShardOperationFailedException;
 import org.elasticsearch.action.support.DefaultShardOperationFailedException;
 import org.elasticsearch.action.support.broadcast.BroadcastShardOperationFailedException;
 import org.elasticsearch.action.support.broadcast.TransportBroadcastOperationAction;
+import org.elasticsearch.cache.recycler.CacheRecycler;
 import org.elasticsearch.cluster.ClusterService;
 import org.elasticsearch.cluster.ClusterState;
 import org.elasticsearch.cluster.block.ClusterBlockException;
@@ -40,6 +42,7 @@ import org.elasticsearch.index.service.IndexService;
 import org.elasticsearch.index.shard.service.IndexShard;
 import org.elasticsearch.indices.IndicesService;
 import org.elasticsearch.script.ScriptService;
+import org.elasticsearch.search.internal.DefaultSearchContext;
 import org.elasticsearch.search.internal.SearchContext;
 import org.elasticsearch.search.internal.ShardSearchRequest;
 import org.elasticsearch.threadpool.ThreadPool;
@@ -61,11 +64,20 @@ public class TransportValidateQueryAction extends TransportBroadcastOperationAct
 
     private final ScriptService scriptService;
 
+    private final CacheRecycler cacheRecycler;
+
     @Inject
-    public TransportValidateQueryAction(Settings settings, ThreadPool threadPool, ClusterService clusterService, TransportService transportService, IndicesService indicesService, ScriptService scriptService) {
+    public TransportValidateQueryAction(Settings settings, ThreadPool threadPool, ClusterService clusterService, TransportService transportService, IndicesService indicesService, ScriptService scriptService, CacheRecycler cacheRecycler) {
         super(settings, threadPool, clusterService, transportService);
         this.indicesService = indicesService;
         this.scriptService = scriptService;
+        this.cacheRecycler = cacheRecycler;
+    }
+
+    @Override
+    protected void doExecute(ValidateQueryRequest request, ActionListener<ValidateQueryResponse> listener) {
+        request.nowInMillis = System.currentTimeMillis();
+        super.doExecute(request, listener);
     }
 
     @Override
@@ -126,7 +138,7 @@ public class TransportValidateQueryAction extends TransportBroadcastOperationAct
         for (int i = 0; i < shardsResponses.length(); i++) {
             Object shardResponse = shardsResponses.get(i);
             if (shardResponse == null) {
-                failedShards++;
+                // simply ignore non active shards
             } else if (shardResponse instanceof BroadcastShardOperationFailedException) {
                 failedShards++;
                 if (shardFailures == null) {
@@ -135,16 +147,16 @@ public class TransportValidateQueryAction extends TransportBroadcastOperationAct
                 shardFailures.add(new DefaultShardOperationFailedException((BroadcastShardOperationFailedException) shardResponse));
             } else {
                 ShardValidateQueryResponse validateQueryResponse = (ShardValidateQueryResponse) shardResponse;
-                valid = valid && validateQueryResponse.valid();
+                valid = valid && validateQueryResponse.isValid();
                 if (request.explain()) {
                     if (queryExplanations == null) {
                         queryExplanations = newArrayList();
                     }
                     queryExplanations.add(new QueryExplanation(
-                            validateQueryResponse.index(),
-                            validateQueryResponse.valid(),
-                            validateQueryResponse.explanation(),
-                            validateQueryResponse.error()
+                            validateQueryResponse.getIndex(),
+                            validateQueryResponse.isValid(),
+                            validateQueryResponse.getExplanation(),
+                            validateQueryResponse.getError()
                     ));
                 }
                 successfulShards++;
@@ -165,10 +177,10 @@ public class TransportValidateQueryAction extends TransportBroadcastOperationAct
         if (request.querySource().length() == 0) {
             valid = true;
         } else {
-            SearchContext.setCurrent(new SearchContext(0,
-                    new ShardSearchRequest().types(request.types()),
-                    null, indexShard.searcher(), indexService, indexShard,
-                    scriptService));
+            SearchContext.setCurrent(new DefaultSearchContext(0,
+                    new ShardSearchRequest().types(request.types()).nowInMillis(request.nowInMillis()),
+                    null, indexShard.acquireSearcher("validate_query"), indexService, indexShard,
+                    scriptService, cacheRecycler));
             try {
                 ParsedQuery parsedQuery = queryParserService.parse(request.querySource());
                 valid = true;

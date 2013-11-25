@@ -23,7 +23,7 @@ import com.google.common.collect.ImmutableMap;
 import org.elasticsearch.Version;
 import org.elasticsearch.action.admin.cluster.node.info.NodeInfo;
 import org.elasticsearch.action.admin.cluster.node.stats.NodeStats;
-import org.elasticsearch.cluster.ClusterService;
+import org.elasticsearch.action.admin.indices.stats.CommonStatsFlags;
 import org.elasticsearch.common.Nullable;
 import org.elasticsearch.common.collect.MapBuilder;
 import org.elasticsearch.common.component.AbstractComponent;
@@ -34,6 +34,7 @@ import org.elasticsearch.discovery.Discovery;
 import org.elasticsearch.http.HttpServer;
 import org.elasticsearch.indices.IndicesService;
 import org.elasticsearch.monitor.MonitorService;
+import org.elasticsearch.plugins.PluginsService;
 import org.elasticsearch.threadpool.ThreadPool;
 import org.elasticsearch.transport.TransportService;
 
@@ -47,11 +48,11 @@ public class NodeService extends AbstractComponent {
 
     private final MonitorService monitorService;
 
-    private final ClusterService clusterService;
-
     private final TransportService transportService;
 
     private final IndicesService indicesService;
+
+    private final PluginsService pluginService;
 
     @Nullable
     private HttpServer httpServer;
@@ -63,20 +64,25 @@ public class NodeService extends AbstractComponent {
 
     private final Version version;
 
+    private final Discovery disovery;
+
     @Inject
-    public NodeService(Settings settings, ThreadPool threadPool, MonitorService monitorService, Discovery discovery, ClusterService clusterService, TransportService transportService, IndicesService indicesService) {
+    public NodeService(Settings settings, ThreadPool threadPool, MonitorService monitorService, Discovery discovery,
+                       TransportService transportService, IndicesService indicesService,
+                       PluginsService pluginService, Version version) {
         super(settings);
         this.threadPool = threadPool;
         this.monitorService = monitorService;
-        this.clusterService = clusterService;
         this.transportService = transportService;
         this.indicesService = indicesService;
+        this.disovery = discovery;
         discovery.setNodeService(this);
         InetAddress address = NetworkUtils.getLocalAddress();
         if (address != null) {
             this.hostname = address.getHostName();
         }
-        this.version = Version.CURRENT;
+        this.version = version;
+        this.pluginService = pluginService;
     }
 
     public void setHttpServer(@Nullable HttpServer httpServer) {
@@ -109,7 +115,7 @@ public class NodeService extends AbstractComponent {
     }
 
     public NodeInfo info() {
-        return new NodeInfo(hostname, version, clusterService.state().nodes().localNode(), serviceAttributes,
+        return new NodeInfo(hostname, version, disovery.localNode(), serviceAttributes,
                 settings,
                 monitorService.osService().info(),
                 monitorService.processService().info(),
@@ -117,12 +123,14 @@ public class NodeService extends AbstractComponent {
                 threadPool.info(),
                 monitorService.networkService().info(),
                 transportService.info(),
-                httpServer == null ? null : httpServer.info()
+                httpServer == null ? null : httpServer.info(),
+                pluginService == null ? null : pluginService.info()
         );
     }
 
-    public NodeInfo info(boolean settings, boolean os, boolean process, boolean jvm, boolean threadPool, boolean network, boolean transport, boolean http) {
-        return new NodeInfo(hostname, version, clusterService.state().nodes().localNode(), serviceAttributes,
+    public NodeInfo info(boolean settings, boolean os, boolean process, boolean jvm, boolean threadPool,
+                         boolean network, boolean transport, boolean http, boolean plugin) {
+        return new NodeInfo(hostname, version, disovery.localNode(), serviceAttributes,
                 settings ? this.settings : null,
                 os ? monitorService.osService().info() : null,
                 process ? monitorService.processService().info() : null,
@@ -130,14 +138,15 @@ public class NodeService extends AbstractComponent {
                 threadPool ? this.threadPool.info() : null,
                 network ? monitorService.networkService().info() : null,
                 transport ? transportService.info() : null,
-                http ? (httpServer == null ? null : httpServer.info()) : null
+                http ? (httpServer == null ? null : httpServer.info()) : null,
+                plugin ? (pluginService == null ? null : pluginService.info()) : null
         );
     }
 
     public NodeStats stats() {
         // for indices stats we want to include previous allocated shards stats as well (it will
         // only be applied to the sensible ones to use, like refresh/merge/flush/indexing stats)
-        return new NodeStats(clusterService.state().nodes().localNode(), System.currentTimeMillis(), hostname,
+        return new NodeStats(disovery.localNode(), System.currentTimeMillis(), hostname,
                 indicesService.stats(true),
                 monitorService.osService().stats(),
                 monitorService.processService().stats(),
@@ -150,11 +159,11 @@ public class NodeService extends AbstractComponent {
         );
     }
 
-    public NodeStats stats(boolean indices, boolean os, boolean process, boolean jvm, boolean threadPool, boolean network, boolean fs, boolean transport, boolean http) {
+    public NodeStats stats(CommonStatsFlags indices, boolean os, boolean process, boolean jvm, boolean threadPool, boolean network, boolean fs, boolean transport, boolean http) {
         // for indices stats we want to include previous allocated shards stats as well (it will
         // only be applied to the sensible ones to use, like refresh/merge/flush/indexing stats)
-        return new NodeStats(clusterService.state().nodes().localNode(), System.currentTimeMillis(), hostname,
-                indices ? indicesService.stats(true) : null,
+        return new NodeStats(disovery.localNode(), System.currentTimeMillis(), hostname,
+                indices.anySet() ? indicesService.stats(true, indices) : null,
                 os ? monitorService.osService().stats() : null,
                 process ? monitorService.processService().stats() : null,
                 jvm ? monitorService.jvmService().stats() : null,

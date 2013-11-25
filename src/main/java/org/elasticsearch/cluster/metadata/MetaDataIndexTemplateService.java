@@ -20,21 +20,28 @@
 package org.elasticsearch.cluster.metadata;
 
 import com.google.common.collect.Maps;
+import com.google.common.collect.Sets;
 import org.elasticsearch.ElasticSearchException;
 import org.elasticsearch.ElasticSearchIllegalArgumentException;
+import org.elasticsearch.action.support.master.MasterNodeOperationRequest;
 import org.elasticsearch.cluster.ClusterService;
 import org.elasticsearch.cluster.ClusterState;
-import org.elasticsearch.cluster.ProcessedClusterStateUpdateTask;
+import org.elasticsearch.cluster.TimeoutClusterStateUpdateTask;
+import org.elasticsearch.common.Priority;
 import org.elasticsearch.common.Strings;
 import org.elasticsearch.common.component.AbstractComponent;
 import org.elasticsearch.common.inject.Inject;
+import org.elasticsearch.common.regex.Regex;
 import org.elasticsearch.common.settings.ImmutableSettings;
 import org.elasticsearch.common.settings.Settings;
+import org.elasticsearch.common.unit.TimeValue;
 import org.elasticsearch.indices.IndexTemplateAlreadyExistsException;
 import org.elasticsearch.indices.IndexTemplateMissingException;
 import org.elasticsearch.indices.InvalidIndexTemplateException;
 
+import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 
 /**
  *
@@ -49,22 +56,44 @@ public class MetaDataIndexTemplateService extends AbstractComponent {
         this.clusterService = clusterService;
     }
 
-    public void removeTemplate(final RemoveRequest request, final RemoveListener listener) {
-        clusterService.submitStateUpdateTask("remove-index-template [" + request.name + "]", new ProcessedClusterStateUpdateTask() {
-            @Override
-            public ClusterState execute(ClusterState currentState) {
-                if (!currentState.metaData().templates().containsKey(request.name)) {
-                    listener.onFailure(new IndexTemplateMissingException(request.name));
-                    return currentState;
-                }
-                MetaData.Builder metaData = MetaData.builder().metaData(currentState.metaData())
-                        .removeTemplate(request.name);
+    public void removeTemplates(final RemoveRequest request, final RemoveListener listener) {
+        clusterService.submitStateUpdateTask("remove-index-template [" + request.name + "]", Priority.URGENT, new TimeoutClusterStateUpdateTask() {
 
-                return ClusterState.builder().state(currentState).metaData(metaData).build();
+            @Override
+            public TimeValue timeout() {
+                return request.masterTimeout;
             }
 
             @Override
-            public void clusterStateProcessed(ClusterState clusterState) {
+            public void onFailure(String source, Throwable t) {
+                listener.onFailure(t);
+            }
+
+            @Override
+            public ClusterState execute(ClusterState currentState) {
+                Set<String> templateNames = Sets.newHashSet();
+                for (String templateName : currentState.metaData().templates().keySet()) {
+                    if (Regex.simpleMatch(request.name, templateName)) {
+                        templateNames.add(templateName);
+                    }
+                }
+                if (templateNames.isEmpty()) {
+                    // if its a match all pattern, and no templates are found (we have none), don't
+                    // fail with index missing...
+                    if (Regex.isMatchAllPattern(request.name)) {
+                        return currentState;
+                    }
+                    throw new IndexTemplateMissingException(request.name);
+                }
+                MetaData.Builder metaData = MetaData.builder(currentState.metaData());
+                for (String templateName : templateNames) {
+                    metaData.removeTemplate(templateName);
+                }
+                return ClusterState.builder(currentState).metaData(metaData).build();
+            }
+
+            @Override
+            public void clusterStateProcessed(String source, ClusterState oldState, ClusterState newState) {
                 listener.onResponse(new RemoveResponse(true));
             }
         });
@@ -92,7 +121,7 @@ public class MetaDataIndexTemplateService extends AbstractComponent {
 
         try {
             validate(request);
-        } catch (Exception e) {
+        } catch (Throwable e) {
             listener.onFailure(e);
             return;
         }
@@ -109,27 +138,36 @@ public class MetaDataIndexTemplateService extends AbstractComponent {
             for (Map.Entry<String, IndexMetaData.Custom> entry : request.customs.entrySet()) {
                 templateBuilder.putCustom(entry.getKey(), entry.getValue());
             }
-        } catch (Exception e) {
+        } catch (Throwable e) {
             listener.onFailure(e);
             return;
         }
         final IndexTemplateMetaData template = templateBuilder.build();
 
-        clusterService.submitStateUpdateTask("create-index-template [" + request.name + "], cause [" + request.cause + "]", new ProcessedClusterStateUpdateTask() {
-            @Override
-            public ClusterState execute(ClusterState currentState) {
-                if (request.create && currentState.metaData().templates().containsKey(request.name)) {
-                    listener.onFailure(new IndexTemplateAlreadyExistsException(request.name));
-                    return currentState;
-                }
-                MetaData.Builder builder = MetaData.builder().metaData(currentState.metaData())
-                        .put(template);
+        clusterService.submitStateUpdateTask("create-index-template [" + request.name + "], cause [" + request.cause + "]", Priority.URGENT, new TimeoutClusterStateUpdateTask() {
 
-                return ClusterState.builder().state(currentState).metaData(builder).build();
+            @Override
+            public TimeValue timeout() {
+                return request.masterTimeout;
             }
 
             @Override
-            public void clusterStateProcessed(ClusterState clusterState) {
+            public void onFailure(String source, Throwable t) {
+                listener.onFailure(t);
+            }
+
+            @Override
+            public ClusterState execute(ClusterState currentState) {
+                if (request.create && currentState.metaData().templates().containsKey(request.name)) {
+                    throw new IndexTemplateAlreadyExistsException(request.name);
+                }
+                MetaData.Builder builder = MetaData.builder(currentState.metaData()).put(template);
+
+                return ClusterState.builder(currentState).metaData(builder).build();
+            }
+
+            @Override
+            public void clusterStateProcessed(String source, ClusterState oldState, ClusterState newState) {
                 listener.onResponse(new PutResponse(true, template));
             }
         });
@@ -148,7 +186,7 @@ public class MetaDataIndexTemplateService extends AbstractComponent {
         if (request.name.startsWith("_")) {
             throw new InvalidIndexTemplateException(request.name, "name must not start with '_'");
         }
-        if (!request.name.toLowerCase().equals(request.name)) {
+        if (!request.name.toLowerCase(Locale.ROOT).equals(request.name)) {
             throw new InvalidIndexTemplateException(request.name, "name must be lower cased");
         }
         if (request.template.contains(" ")) {
@@ -184,6 +222,8 @@ public class MetaDataIndexTemplateService extends AbstractComponent {
         Settings settings = ImmutableSettings.Builder.EMPTY_SETTINGS;
         Map<String, String> mappings = Maps.newHashMap();
         Map<String, IndexMetaData.Custom> customs = Maps.newHashMap();
+
+        TimeValue masterTimeout = MasterNodeOperationRequest.DEFAULT_MASTER_NODE_TIMEOUT;
 
         public PutRequest(String cause, String name) {
             this.cause = cause;
@@ -224,6 +264,11 @@ public class MetaDataIndexTemplateService extends AbstractComponent {
             mappings.put(mappingType, mappingSource);
             return this;
         }
+
+        public PutRequest masterTimeout(TimeValue masterTimeout) {
+            this.masterTimeout = masterTimeout;
+            return this;
+        }
     }
 
     public static class PutResponse {
@@ -246,9 +291,15 @@ public class MetaDataIndexTemplateService extends AbstractComponent {
 
     public static class RemoveRequest {
         final String name;
+        TimeValue masterTimeout = MasterNodeOperationRequest.DEFAULT_MASTER_NODE_TIMEOUT;
 
         public RemoveRequest(String name) {
             this.name = name;
+        }
+
+        public RemoveRequest masterTimeout(TimeValue masterTimeout) {
+            this.masterTimeout = masterTimeout;
+            return this;
         }
     }
 

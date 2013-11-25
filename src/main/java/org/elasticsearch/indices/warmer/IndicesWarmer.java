@@ -23,28 +23,29 @@ import org.elasticsearch.cluster.metadata.IndexMetaData;
 import org.elasticsearch.index.engine.Engine;
 import org.elasticsearch.index.shard.ShardId;
 import org.elasticsearch.index.shard.service.IndexShard;
+import org.elasticsearch.threadpool.ThreadPool;
 
 /**
  */
 public interface IndicesWarmer {
 
-    static interface Listener {
+    public abstract class Listener {
 
-        String executor();
+        public String executor() {
+            return ThreadPool.Names.WARMER;
+        }
 
-        void warm(IndexShard indexShard, IndexMetaData indexMetaData, WarmerContext context);
+        public abstract void warm(IndexShard indexShard, IndexMetaData indexMetaData, WarmerContext context, ThreadPool threadPool);
     }
 
     public static class WarmerContext {
 
         private final ShardId shardId;
 
-        private final Engine.Searcher fullSearcher;
         private final Engine.Searcher newSearcher;
 
-        public WarmerContext(ShardId shardId, Engine.Searcher fullSearcher, Engine.Searcher newSearcher) {
+        public WarmerContext(ShardId shardId, Engine.Searcher newSearcher) {
             this.shardId = shardId;
-            this.fullSearcher = fullSearcher;
             this.newSearcher = newSearcher;
         }
 
@@ -52,10 +53,7 @@ public interface IndicesWarmer {
             return shardId;
         }
 
-        public Engine.Searcher fullSearcher() {
-            return fullSearcher;
-        }
-
+        /** Return a searcher instance that only wraps the segments to warm. */
         public Engine.Searcher newSearcher() {
             return newSearcher;
         }

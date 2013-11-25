@@ -20,10 +20,12 @@
 package org.elasticsearch.action.count;
 
 import org.elasticsearch.ElasticSearchException;
+import org.elasticsearch.action.ActionListener;
 import org.elasticsearch.action.ShardOperationFailedException;
 import org.elasticsearch.action.support.DefaultShardOperationFailedException;
 import org.elasticsearch.action.support.broadcast.BroadcastShardOperationFailedException;
 import org.elasticsearch.action.support.broadcast.TransportBroadcastOperationAction;
+import org.elasticsearch.cache.recycler.CacheRecycler;
 import org.elasticsearch.cluster.ClusterService;
 import org.elasticsearch.cluster.ClusterState;
 import org.elasticsearch.cluster.block.ClusterBlockException;
@@ -40,6 +42,7 @@ import org.elasticsearch.index.shard.service.IndexShard;
 import org.elasticsearch.indices.IndicesService;
 import org.elasticsearch.script.ScriptService;
 import org.elasticsearch.search.SearchShardTarget;
+import org.elasticsearch.search.internal.DefaultSearchContext;
 import org.elasticsearch.search.internal.SearchContext;
 import org.elasticsearch.search.internal.ShardSearchRequest;
 import org.elasticsearch.search.query.QueryPhaseExecutionException;
@@ -62,12 +65,21 @@ public class TransportCountAction extends TransportBroadcastOperationAction<Coun
 
     private final ScriptService scriptService;
 
+    private final CacheRecycler cacheRecycler;
+
     @Inject
     public TransportCountAction(Settings settings, ThreadPool threadPool, ClusterService clusterService, TransportService transportService,
-                                IndicesService indicesService, ScriptService scriptService) {
+                                IndicesService indicesService, ScriptService scriptService, CacheRecycler cacheRecycler) {
         super(settings, threadPool, clusterService, transportService);
         this.indicesService = indicesService;
         this.scriptService = scriptService;
+        this.cacheRecycler = cacheRecycler;
+    }
+
+    @Override
+    protected void doExecute(CountRequest request, ActionListener<CountResponse> listener) {
+        request.nowInMillis = System.currentTimeMillis();
+        super.doExecute(request, listener);
     }
 
     @Override
@@ -104,7 +116,7 @@ public class TransportCountAction extends TransportBroadcastOperationAction<Coun
     @Override
     protected GroupShardsIterator shards(ClusterState clusterState, CountRequest request, String[] concreteIndices) {
         Map<String, Set<String>> routingMap = clusterState.metaData().resolveSearchRouting(request.routing(), request.indices());
-        return clusterService.operationRouting().searchShards(clusterState, request.indices(), concreteIndices, routingMap, null);
+        return clusterService.operationRouting().searchShards(clusterState, request.indices(), concreteIndices, routingMap, request.preference());
     }
 
     @Override
@@ -126,7 +138,7 @@ public class TransportCountAction extends TransportBroadcastOperationAction<Coun
         for (int i = 0; i < shardsResponses.length(); i++) {
             Object shardResponse = shardsResponses.get(i);
             if (shardResponse == null) {
-                failedShards++;
+                // simply ignore non active shards
             } else if (shardResponse instanceof BroadcastShardOperationFailedException) {
                 failedShards++;
                 if (shardFailures == null) {
@@ -134,7 +146,7 @@ public class TransportCountAction extends TransportBroadcastOperationAction<Coun
                 }
                 shardFailures.add(new DefaultShardOperationFailedException((BroadcastShardOperationFailedException) shardResponse));
             } else {
-                count += ((ShardCountResponse) shardResponse).count();
+                count += ((ShardCountResponse) shardResponse).getCount();
                 successfulShards++;
             }
         }
@@ -147,10 +159,12 @@ public class TransportCountAction extends TransportBroadcastOperationAction<Coun
         IndexShard indexShard = indexService.shardSafe(request.shardId());
 
         SearchShardTarget shardTarget = new SearchShardTarget(clusterService.localNode().id(), request.index(), request.shardId());
-        SearchContext context = new SearchContext(0,
-                new ShardSearchRequest().types(request.types()).filteringAliases(request.filteringAliases()),
-                shardTarget, indexShard.searcher(), indexService, indexShard,
-                scriptService);
+        SearchContext context = new DefaultSearchContext(0,
+                new ShardSearchRequest().types(request.types())
+                        .filteringAliases(request.filteringAliases())
+                        .nowInMillis(request.nowInMillis()),
+                shardTarget, indexShard.acquireSearcher("count"), indexService, indexShard,
+                scriptService, cacheRecycler);
         SearchContext.setCurrent(context);
 
         try {

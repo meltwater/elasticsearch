@@ -26,14 +26,17 @@ import org.apache.lucene.index.FieldInfo.IndexOptions;
 import org.elasticsearch.common.Nullable;
 import org.elasticsearch.common.Strings;
 import org.elasticsearch.common.lucene.Lucene;
+import org.elasticsearch.common.settings.ImmutableSettings;
 import org.elasticsearch.common.settings.Settings;
 import org.elasticsearch.common.xcontent.XContentBuilder;
+import org.elasticsearch.index.codec.docvaluesformat.DocValuesFormatProvider;
 import org.elasticsearch.index.codec.postingsformat.PostingsFormatProvider;
 import org.elasticsearch.index.fielddata.FieldDataType;
 import org.elasticsearch.index.mapper.*;
 import org.elasticsearch.index.mapper.core.AbstractFieldMapper;
 
 import java.io.IOException;
+import java.util.List;
 import java.util.Map;
 
 import static org.elasticsearch.common.xcontent.support.XContentMapValues.nodeBooleanValue;
@@ -63,26 +66,26 @@ public class IndexFieldMapper extends AbstractFieldMapper<String> implements Int
             FIELD_TYPE.freeze();
         }
 
-        public static final boolean ENABLED = false;
+        public static final EnabledAttributeMapper ENABLED_STATE = EnabledAttributeMapper.DISABLED;
     }
 
     public static class Builder extends AbstractFieldMapper.Builder<Builder, IndexFieldMapper> {
 
-        private boolean enabled = Defaults.ENABLED;
+        private EnabledAttributeMapper enabledState = EnabledAttributeMapper.UNSET_DISABLED;
 
         public Builder() {
             super(Defaults.NAME, new FieldType(Defaults.FIELD_TYPE));
             indexName = Defaults.INDEX_NAME;
         }
 
-        public Builder enabled(boolean enabled) {
-            this.enabled = enabled;
+        public Builder enabled(EnabledAttributeMapper enabledState) {
+            this.enabledState = enabledState;
             return this;
         }
 
         @Override
         public IndexFieldMapper build(BuilderContext context) {
-            return new IndexFieldMapper(name, indexName, boost, fieldType, enabled, provider, fieldDataSettings);
+            return new IndexFieldMapper(name, indexName, boost, fieldType, enabledState, postingsProvider, docValuesProvider, fieldDataSettings, context.indexSettings());
         }
     }
 
@@ -96,32 +99,33 @@ public class IndexFieldMapper extends AbstractFieldMapper<String> implements Int
                 String fieldName = Strings.toUnderscoreCase(entry.getKey());
                 Object fieldNode = entry.getValue();
                 if (fieldName.equals("enabled")) {
-                    builder.enabled(nodeBooleanValue(fieldNode));
+                    EnabledAttributeMapper mapper = nodeBooleanValue(fieldNode) ? EnabledAttributeMapper.ENABLED : EnabledAttributeMapper.DISABLED;
+                    builder.enabled(mapper);
                 }
             }
             return builder;
         }
     }
 
-    private final boolean enabled;
+    private EnabledAttributeMapper enabledState;
 
     public IndexFieldMapper() {
         this(Defaults.NAME, Defaults.INDEX_NAME);
     }
 
     protected IndexFieldMapper(String name, String indexName) {
-        this(name, indexName, Defaults.BOOST, new FieldType(Defaults.FIELD_TYPE), Defaults.ENABLED, null, null);
+        this(name, indexName, Defaults.BOOST, new FieldType(Defaults.FIELD_TYPE), Defaults.ENABLED_STATE, null, null, null, ImmutableSettings.EMPTY);
     }
 
-    public IndexFieldMapper(String name, String indexName, float boost, FieldType fieldType, boolean enabled,
-                            PostingsFormatProvider provider, @Nullable Settings fieldDataSettings) {
+    public IndexFieldMapper(String name, String indexName, float boost, FieldType fieldType, EnabledAttributeMapper enabledState,
+                            PostingsFormatProvider postingsProvider, DocValuesFormatProvider docValuesProvider, @Nullable Settings fieldDataSettings, Settings indexSettings) {
         super(new Names(name, indexName, indexName, name), boost, fieldType, Lucene.KEYWORD_ANALYZER,
-                Lucene.KEYWORD_ANALYZER, provider, null, fieldDataSettings);
-        this.enabled = enabled;
+                Lucene.KEYWORD_ANALYZER, postingsProvider, docValuesProvider, null, fieldDataSettings, indexSettings);
+        this.enabledState = enabledState;
     }
 
     public boolean enabled() {
-        return this.enabled;
+        return this.enabledState.enabled;
     }
 
     @Override
@@ -132,6 +136,11 @@ public class IndexFieldMapper extends AbstractFieldMapper<String> implements Int
     @Override
     public FieldDataType defaultFieldDataType() {
         return new FieldDataType("string");
+    }
+
+    @Override
+    public boolean hasDocValues() {
+        return false;
     }
 
     public String value(Document document) {
@@ -172,11 +181,11 @@ public class IndexFieldMapper extends AbstractFieldMapper<String> implements Int
     }
 
     @Override
-    protected Field parseCreateField(ParseContext context) throws IOException {
-        if (!enabled) {
-            return null;
+    protected void parseCreateField(ParseContext context, List<Field> fields) throws IOException {
+        if (!enabledState.enabled) {
+            return;
         }
-        return new Field(names.indexName(), context.index(), fieldType);
+        fields.add(new Field(names.indexName(), context.index(), fieldType));
     }
 
     @Override
@@ -186,16 +195,25 @@ public class IndexFieldMapper extends AbstractFieldMapper<String> implements Int
 
     @Override
     public XContentBuilder toXContent(XContentBuilder builder, Params params) throws IOException {
+        boolean includeDefaults = params.paramAsBoolean("include_defaults", false);
+
         // if all defaults, no need to write it at all
-        if (fieldType().stored() == Defaults.FIELD_TYPE.stored() && enabled == Defaults.ENABLED) {
+        if (!includeDefaults && fieldType().stored() == Defaults.FIELD_TYPE.stored() && enabledState == Defaults.ENABLED_STATE) {
             return builder;
         }
         builder.startObject(CONTENT_TYPE);
-        if (fieldType().stored() != Defaults.FIELD_TYPE.stored()) {
+        if (includeDefaults || fieldType().stored() != Defaults.FIELD_TYPE.stored() && enabledState.enabled) {
             builder.field("store", fieldType().stored());
         }
-        if (enabled != Defaults.ENABLED) {
-            builder.field("enabled", enabled);
+        if (includeDefaults || enabledState != Defaults.ENABLED_STATE) {
+            builder.field("enabled", enabledState.enabled);
+        }
+
+        if (customFieldDataSettings != null) {
+            builder.field("fielddata", (Map) customFieldDataSettings.getAsMap());
+        } else if (includeDefaults) {
+            builder.field("fielddata", (Map) fieldDataType.getSettings().getAsMap());
+
         }
         builder.endObject();
         return builder;
@@ -203,6 +221,11 @@ public class IndexFieldMapper extends AbstractFieldMapper<String> implements Int
 
     @Override
     public void merge(Mapper mergeWith, MergeContext mergeContext) throws MergeMappingException {
-        // do nothing here, no merging, but also no exception
+        IndexFieldMapper indexFieldMapperMergeWith = (IndexFieldMapper) mergeWith;
+        if (!mergeContext.mergeFlags().simulate()) {
+            if (indexFieldMapperMergeWith.enabledState != enabledState && !indexFieldMapperMergeWith.enabledState.unset()) {
+                this.enabledState = indexFieldMapperMergeWith.enabledState;
+            }
+        }
     }
 }

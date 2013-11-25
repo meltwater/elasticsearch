@@ -35,14 +35,15 @@ import java.util.Map;
 /**
  * The {@link PostingsFormatService} provides access to
  * all configured {@link PostingsFormatProvider} instances by
- * {@link PostingsFormatProvider#name() name}. 
- * 
- * @see CodecService 
- * 
+ * {@link PostingsFormatProvider#name() name}.
+ *
+ * @see CodecService
  */
 public class PostingsFormatService extends AbstractIndexComponent {
 
     private final ImmutableMap<String, PostingsFormatProvider> providers;
+
+    public final static String DEFAULT_FORMAT = "default";
 
     public PostingsFormatService(Index index) {
         this(index, ImmutableSettings.Builder.EMPTY_SETTINGS);
@@ -70,8 +71,7 @@ public class PostingsFormatService extends AbstractIndexComponent {
             providers.put(name, factory.create(name, settings));
         }
 
-        // even though we have this logic in the cache module (where it should be, so posting format with delegates will work properly wiht the pre initialized map)
-        // we do it here as well so we can use just this instance for tests
+        // This is only needed for tests when guice doesn't have the chance to populate the list of PF factories
         for (PreBuiltPostingsFormatProvider.Factory factory : PostingFormats.listFactories()) {
             if (providers.containsKey(factory.name())) {
                 continue;
@@ -84,7 +84,7 @@ public class PostingsFormatService extends AbstractIndexComponent {
 
     public PostingsFormatProvider get(String name) throws ElasticSearchIllegalArgumentException {
         PostingsFormatProvider provider = providers.get(name);
-        if (name == null) {
+        if (provider == null) {
             throw new ElasticSearchIllegalArgumentException("failed to find postings_format [" + name + "]");
         }
         return provider;

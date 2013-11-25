@@ -19,12 +19,15 @@
 
 package org.elasticsearch.index.query;
 
-import com.spatial4j.core.shape.Shape;
 import org.apache.lucene.search.Query;
+import org.apache.lucene.spatial.prefix.PrefixTreeStrategy;
+import org.apache.lucene.spatial.query.SpatialArgs;
+import org.apache.lucene.spatial.query.SpatialOperation;
+import org.elasticsearch.ElasticSearchIllegalArgumentException;
 import org.elasticsearch.common.Nullable;
 import org.elasticsearch.common.Strings;
-import org.elasticsearch.common.geo.GeoJSONShapeParser;
 import org.elasticsearch.common.geo.ShapeRelation;
+import org.elasticsearch.common.geo.builders.ShapeBuilder;
 import org.elasticsearch.common.inject.Inject;
 import org.elasticsearch.common.xcontent.XContentParser;
 import org.elasticsearch.index.mapper.FieldMapper;
@@ -55,8 +58,9 @@ public class GeoShapeQueryParser implements QueryParser {
         XContentParser parser = parseContext.parser();
 
         String fieldName = null;
-        ShapeRelation shapeRelation = null;
-        Shape shape = null;
+        ShapeRelation shapeRelation = ShapeRelation.INTERSECTS;
+        String strategyName = null;
+        ShapeBuilder shape = null;
 
         String id = null;
         String type = null;
@@ -66,6 +70,7 @@ public class GeoShapeQueryParser implements QueryParser {
         XContentParser.Token token;
         String currentFieldName = null;
         float boost = 1f;
+        String queryName = null;
 
         while ((token = parser.nextToken()) != XContentParser.Token.END_OBJECT) {
             if (token == XContentParser.Token.FIELD_NAME) {
@@ -78,7 +83,9 @@ public class GeoShapeQueryParser implements QueryParser {
                         currentFieldName = parser.currentName();
                         token = parser.nextToken();
                         if ("shape".equals(currentFieldName)) {
-                            shape = GeoJSONShapeParser.parse(parser);
+                            shape = ShapeBuilder.parse(parser);
+                        } else if ("strategy".equals(currentFieldName)) {
+                            strategyName = parser.text();
                         } else if ("relation".equals(currentFieldName)) {
                             shapeRelation = ShapeRelation.getRelationByName(parser.text());
                             if (shapeRelation == null) {
@@ -112,6 +119,8 @@ public class GeoShapeQueryParser implements QueryParser {
             } else if (token.isValue()) {
                 if ("boost".equals(currentFieldName)) {
                     boost = parser.floatValue();
+                } else if ("_name".equals(currentFieldName)) {
+                    queryName = parser.text();
                 }
             }
         }
@@ -135,13 +144,34 @@ public class GeoShapeQueryParser implements QueryParser {
 
         GeoShapeFieldMapper shapeFieldMapper = (GeoShapeFieldMapper) fieldMapper;
 
-        Query query = shapeFieldMapper.spatialStrategy().createQuery(shape, shapeRelation);
+        PrefixTreeStrategy strategy = shapeFieldMapper.defaultStrategy();
+        if (strategyName != null) {
+            strategy = shapeFieldMapper.resolveStrategy(strategyName);
+        }
+        Query query = strategy.makeQuery(getArgs(shape, shapeRelation));
         query.setBoost(boost);
+        if (queryName != null) {
+            parseContext.addNamedQuery(queryName, query);
+        }
         return query;
     }
 
     @Inject(optional = true)
     public void setFetchService(@Nullable ShapeFetchService fetchService) {
         this.fetchService = fetchService;
+    }
+    
+    public static SpatialArgs getArgs(ShapeBuilder shape, ShapeRelation relation) {
+        switch(relation) {
+        case DISJOINT:
+            return new SpatialArgs(SpatialOperation.IsDisjointTo, shape.build());
+        case INTERSECTS:
+            return new SpatialArgs(SpatialOperation.Intersects, shape.build());
+        case WITHIN:
+            return new SpatialArgs(SpatialOperation.IsWithin, shape.build());
+        default:
+            throw new ElasticSearchIllegalArgumentException("");
+        
+        }
     }
 }

@@ -32,7 +32,8 @@ public class HasParentFilterBuilder extends BaseFilterBuilder {
     private final FilterBuilder filterBuilder;
     private final String parentType;
     private String filterName;
-    private String executionType;
+    private Boolean cache;
+    private String cacheKey;
 
     /**
      * @param parentType  The parent type
@@ -54,18 +55,28 @@ public class HasParentFilterBuilder extends BaseFilterBuilder {
         this.filterBuilder = parentFilter;
     }
 
+    /**
+     * Sets the filter name for the filter that can be used when searching for matched_filters per hit.
+     */
     public HasParentFilterBuilder filterName(String filterName) {
         this.filterName = filterName;
         return this;
     }
 
     /**
-     * Expert: Sets the low level parent to child filtering implementation. Can be: 'bitset' or 'uid'
-     * <p/>
-     * This option is experimental and will be removed.
+     * Should the filter be cached or not. Defaults to <tt>false</tt>.
      */
-    public HasParentFilterBuilder executionType(String executionType) {
-        this.executionType = executionType;
+    public HasParentFilterBuilder cache(boolean cache) {
+        this.cache = cache;
+        return this;
+    }
+
+    /**
+     * Defines what should be used as key to represent this filter in the filter cache.
+     * By default the filter itself is used as key.
+     */
+    public HasParentFilterBuilder cacheKey(String cacheKey) {
+        this.cacheKey = cacheKey;
         return this;
     }
 
@@ -83,8 +94,11 @@ public class HasParentFilterBuilder extends BaseFilterBuilder {
         if (filterName != null) {
             builder.field("_name", filterName);
         }
-        if (executionType != null) {
-            builder.field("execution_type", executionType);
+        if (cache != null) {
+            builder.field("_cache", cache);
+        }
+        if (cacheKey != null) {
+            builder.field("_cache_key", cacheKey);
         }
         builder.endObject();
     }

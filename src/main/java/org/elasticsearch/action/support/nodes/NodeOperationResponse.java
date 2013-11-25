@@ -37,21 +37,15 @@ public abstract class NodeOperationResponse extends TransportResponse {
     }
 
     protected NodeOperationResponse(DiscoveryNode node) {
+        assert node != null;
         this.node = node;
     }
 
     /**
      * The node this information relates to.
      */
-    public DiscoveryNode node() {
-        return node;
-    }
-
-    /**
-     * The node this information relates to.
-     */
     public DiscoveryNode getNode() {
-        return node();
+        return node;
     }
 
     @Override

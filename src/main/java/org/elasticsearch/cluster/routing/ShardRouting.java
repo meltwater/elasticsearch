@@ -87,7 +87,7 @@ public interface ShardRouting extends Streamable, Serializable, ToXContent {
     /**
      * Returns <code>true</code> iff the this shard is currently relocating to
      * another node. Otherwise <code>false</code>
-     * 
+     *
      * @see ShardRoutingState#RELOCATING
      */
     boolean relocating();
@@ -115,6 +115,11 @@ public interface ShardRouting extends Streamable, Serializable, ToXContent {
      * The relocating node id the shard is either relocating to or relocating from.
      */
     String relocatingNodeId();
+
+    /**
+     * Snapshot id and repository where this shard is being restored from
+     */
+    RestoreSource restoreSource();
 
     /**
      * Returns <code>true</code> iff this shard is a primary.

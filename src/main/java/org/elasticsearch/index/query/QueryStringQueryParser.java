@@ -19,12 +19,9 @@
 
 package org.elasticsearch.index.query;
 
+import com.carrotsearch.hppc.ObjectFloatOpenHashMap;
 import com.google.common.collect.Lists;
-import gnu.trove.impl.Constants;
-import gnu.trove.map.hash.TObjectFloatHashMap;
-
 import org.apache.lucene.queryparser.classic.MapperQueryParser;
-import org.apache.lucene.queryparser.classic.ParseException;
 import org.apache.lucene.queryparser.classic.QueryParserSettings;
 import org.apache.lucene.search.BooleanQuery;
 import org.apache.lucene.search.Query;
@@ -67,6 +64,7 @@ public class QueryStringQueryParser implements QueryParser {
     public Query parse(QueryParseContext parseContext) throws IOException, QueryParsingException {
         XContentParser parser = parseContext.parser();
 
+        String queryName = null;
         QueryParserSettings qpSettings = new QueryParserSettings();
         qpSettings.defaultField(parseContext.defaultField());
         qpSettings.lenient(parseContext.queryStringLenient());
@@ -105,7 +103,7 @@ public class QueryStringQueryParser implements QueryParser {
                                 qpSettings.fields().add(field);
                                 if (fBoost != -1) {
                                     if (qpSettings.boosts() == null) {
-                                        qpSettings.boosts(new TObjectFloatHashMap<String>(Constants.DEFAULT_CAPACITY, Constants.DEFAULT_LOAD_FACTOR, 1.0f));
+                                        qpSettings.boosts(new ObjectFloatOpenHashMap<String>());
                                     }
                                     qpSettings.boosts().put(field, fBoost);
                                 }
@@ -114,7 +112,7 @@ public class QueryStringQueryParser implements QueryParser {
                             qpSettings.fields().add(fField);
                             if (fBoost != -1) {
                                 if (qpSettings.boosts() == null) {
-                                    qpSettings.boosts(new TObjectFloatHashMap<String>(Constants.DEFAULT_CAPACITY, Constants.DEFAULT_LOAD_FACTOR, 1.0f));
+                                    qpSettings.boosts(new ObjectFloatOpenHashMap<String>());
                                 }
                                 qpSettings.boosts().put(fField, fBoost);
                             }
@@ -185,6 +183,8 @@ public class QueryStringQueryParser implements QueryParser {
                     qpSettings.quoteFieldSuffix(parser.textOrNull());
                 } else if ("lenient".equalsIgnoreCase(currentFieldName)) {
                     qpSettings.lenient(parser.booleanValue());
+                } else if ("_name".equals(currentFieldName)) {
+                    queryName = parser.text();
                 } else {
                     throw new QueryParsingException(parseContext.index(), "[query_string] query does not support [" + currentFieldName + "]");
                 }
@@ -214,12 +214,17 @@ public class QueryStringQueryParser implements QueryParser {
             if (query == null) {
                 return null;
             }
-            query.setBoost(qpSettings.boost());
+            if (qpSettings.boost() != QueryParserSettings.DEFAULT_BOOST) {
+                query.setBoost(query.getBoost() * qpSettings.boost());
+            }
             query = optimizeQuery(fixNegativeQueryIfNeeded(query));
             if (query instanceof BooleanQuery) {
                 Queries.applyMinimumShouldMatch((BooleanQuery) query, qpSettings.minimumShouldMatch());
             }
             parseContext.indexCache().queryParserCache().put(qpSettings, query);
+            if (queryName != null) {
+                parseContext.addNamedQuery(queryName, query);
+            }
             return query;
         } catch (org.apache.lucene.queryparser.classic.ParseException e) {
             throw new QueryParsingException(parseContext.index(), "Failed to parse query [" + qpSettings.queryString() + "]", e);

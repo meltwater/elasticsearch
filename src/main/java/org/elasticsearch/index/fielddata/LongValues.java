@@ -20,123 +20,138 @@
 package org.elasticsearch.index.fielddata;
 
 import org.elasticsearch.ElasticSearchIllegalStateException;
-import org.elasticsearch.index.fielddata.util.IntArrayRef;
-import org.elasticsearch.index.fielddata.util.LongArrayRef;
+import org.elasticsearch.index.fielddata.ordinals.Ordinals;
+import org.elasticsearch.index.fielddata.ordinals.Ordinals.Docs;
 
 /**
+ * A state-full lightweight per document set of <code>long</code> values.
+ *
+ * To iterate over values in a document use the following pattern:
+ * <pre>
+ *   LongValues values = ..;
+ *   final int numValues = values.setDocId(docId);
+ *   for (int i = 0; i < numValues; i++) {
+ *       long value = values.nextValue();
+ *       // process value
+ *   }
+ * </pre>
+ *
  */
-public interface LongValues {
+public abstract class LongValues {
 
-    static final LongValues EMPTY = new Empty();
+    /**
+     * An empty {@link LongValues instance}
+     */
+    public static final LongValues EMPTY = new Empty();
+
+    private final boolean multiValued;
+
+    protected int docId;
+
+    /**
+     * Creates a new {@link LongValues} instance
+     * @param multiValued <code>true</code> iff this instance is multivalued. Otherwise <code>false</code>.
+     */
+    protected LongValues(boolean multiValued) {
+        this.multiValued = multiValued;
+    }
 
     /**
      * Is one of the documents in this field data values is multi valued?
      */
-    boolean isMultiValued();
+    public final boolean isMultiValued() {
+        return multiValued;
+    }
 
     /**
-     * Is there a value for this doc?
+     * Sets iteration to the specified docID and returns the number of
+     * values for this document ID,
+     * @param docId document ID
+     *
+     * @see #nextValue()
      */
-    boolean hasValue(int docId);
+    public abstract int setDocument(int docId);
 
-    long getValue(int docId);
+    /**
+     * Returns the next value for the current docID set to {@link #setDocument(int)}.
+     * This method should only be called <tt>N</tt> times where <tt>N</tt> is the number
+     * returned from {@link #setDocument(int)}. If called more than <tt>N</tt> times the behavior
+     * is undefined.
+     * <p>
+     * If this instance returns ordered values the <tt>Nth</tt> value is strictly less than the <tt>N+1</tt> value with
+     * respect to the {@link AtomicFieldData.Order} returned from {@link #getOrder()}. If this instance returns
+     * <i>unordered</i> values {@link #getOrder()} must return {@link AtomicFieldData.Order#NONE}
+     * Note: the values returned are de-duplicated, only unique values are returned.
+     * </p>
+     *
+     * @return the next value for the current docID set to {@link #setDocument(int)}.
+     */
+    public abstract long nextValue();
 
-    long getValueMissing(int docId, long missingValue);
-
-    LongArrayRef getValues(int docId);
-
-    Iter getIter(int docId);
-
-    void forEachValueInDoc(int docId, ValueInDocProc proc);
-
-    static interface ValueInDocProc {
-
-        void onValue(int docId, long value);
-
-        void onMissing(int docId);
+    /**
+     * Returns the order the values are returned from {@link #nextValue()}.
+     * <p> Note: {@link LongValues} have {@link AtomicFieldData.Order#NUMERIC} by default.</p>
+     */
+    public AtomicFieldData.Order getOrder() {
+        return AtomicFieldData.Order.NUMERIC;
     }
 
-    static interface Iter {
+    /**
+     * Ordinal based {@link LongValues}.
+     */
+    public static abstract class WithOrdinals extends LongValues {
 
-        boolean hasNext();
+        protected final Docs ordinals;
 
-        long next();
-
-        static class Empty implements Iter {
-
-            public static final Empty INSTANCE = new Empty();
-
-            @Override
-            public boolean hasNext() {
-                return false;
-            }
-
-            @Override
-            public long next() {
-                throw new ElasticSearchIllegalStateException();
-            }
+        protected WithOrdinals(Ordinals.Docs ordinals) {
+            super(ordinals.isMultiValued());
+            this.ordinals = ordinals;
         }
 
-        static class Single implements Iter {
-
-            public long value;
-            public boolean done;
-
-            public Single reset(long value) {
-                this.value = value;
-                this.done = false;
-                return this;
-            }
-
-            @Override
-            public boolean hasNext() {
-                return !done;
-            }
-
-            @Override
-            public long next() {
-                assert !done;
-                done = true;
-                return value;
-            }
+        /**
+         * Returns the associated ordinals instance.
+         * @return the associated ordinals instance.
+         */
+        public Docs ordinals() {
+            return this.ordinals;
         }
-    }
 
-    static class Empty implements LongValues {
+        /**
+         * Returns the value for the given ordinal.
+         * @param ord the ordinal to lookup.
+         * @return a long value associated with the given ordinal.
+         */
+        public abstract long getValueByOrd(long ord);
+
+
         @Override
-        public boolean isMultiValued() {
-            return false;
+        public int setDocument(int docId) {
+            this.docId = docId;
+            return ordinals.setDocument(docId);
         }
 
         @Override
-        public boolean hasValue(int docId) {
-            return false;
-        }
-
-        @Override
-        public long getValue(int docId) {
-            throw new ElasticSearchIllegalStateException("Can't retrieve a value from an empty LongValues");
-        }
-
-        @Override
-        public long getValueMissing(int docId, long missingValue) {
-            return missingValue;
-        }
-
-        @Override
-        public LongArrayRef getValues(int docId) {
-            return LongArrayRef.EMPTY;
-        }
-
-        @Override
-        public Iter getIter(int docId) {
-            return Iter.Empty.INSTANCE;
-        }
-
-        @Override
-        public void forEachValueInDoc(int docId, ValueInDocProc proc) {
-            proc.onMissing(docId);
+        public long nextValue() {
+            return getValueByOrd(ordinals.nextOrd());
         }
     }
 
+  
+    private static final class Empty extends LongValues {
+
+        public Empty() {
+            super(false);
+        }
+
+        @Override
+        public int setDocument(int docId) {
+            return 0;
+        }
+        
+        @Override
+        public long nextValue() {
+            throw new ElasticSearchIllegalStateException("Empty LongValues has no next value");
+        }
+
+    }
 }

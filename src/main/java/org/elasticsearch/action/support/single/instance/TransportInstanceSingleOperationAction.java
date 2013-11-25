@@ -155,7 +155,7 @@ public abstract class TransportInstanceSingleOperationAction<Request extends Ins
                     }
                 }
                 shardIt = shards(clusterState, request);
-            } catch (Exception e) {
+            } catch (Throwable e) {
                 listener.onFailure(e);
                 return true;
             }
@@ -184,20 +184,31 @@ public abstract class TransportInstanceSingleOperationAction<Request extends Ins
             request.shardId = shardIt.shardId().id();
             if (shard.currentNodeId().equals(nodes.localNodeId())) {
                 request.beforeLocalFork();
-                threadPool.executor(executor).execute(new Runnable() {
-                    @Override
-                    public void run() {
-                        try {
-                            shardOperation(request, listener);
-                        } catch (Exception e) {
-                            if (retryOnFailure(e)) {
-                                retry(fromClusterEvent, null);
-                            } else {
-                                listener.onFailure(e);
+                try {
+                    threadPool.executor(executor).execute(new Runnable() {
+                        @Override
+                        public void run() {
+                            try {
+                                shardOperation(request, listener);
+                            } catch (Throwable e) {
+                                if (retryOnFailure(e)) {
+                                    operationStarted.set(false);
+                                    // we already marked it as started when we executed it (removed the listener) so pass false
+                                    // to re-add to the cluster listener
+                                    retry(false, null);
+                                } else {
+                                    listener.onFailure(e);
+                                }
                             }
                         }
+                    });
+                } catch (Throwable e) {
+                    if (retryOnFailure(e)) {
+                        retry(fromClusterEvent, null);
+                    } else {
+                        listener.onFailure(e);
                     }
-                });
+                }
             } else {
                 DiscoveryNode node = nodes.get(shard.currentNodeId());
                 transportService.sendRequest(node, transportAction, request, transportOptions(), new BaseTransportResponseHandler<Response>() {
@@ -306,7 +317,7 @@ public abstract class TransportInstanceSingleOperationAction<Request extends Ins
                 public void onResponse(Response result) {
                     try {
                         channel.sendResponse(result);
-                    } catch (Exception e) {
+                    } catch (Throwable e) {
                         onFailure(e);
                     }
                 }

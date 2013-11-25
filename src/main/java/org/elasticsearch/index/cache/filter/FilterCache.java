@@ -19,10 +19,10 @@
 
 package org.elasticsearch.index.cache.filter;
 
-import org.apache.lucene.index.IndexReader;
 import org.apache.lucene.search.Filter;
 import org.elasticsearch.common.component.CloseableComponent;
 import org.elasticsearch.index.IndexComponent;
+import org.elasticsearch.index.service.IndexService;
 
 /**
  *
@@ -39,15 +39,16 @@ public interface FilterCache extends IndexComponent, CloseableComponent {
         }
     }
 
+    // we need to "inject" the index service to not create cyclic dep
+    void setIndexService(IndexService indexService);
+
     String type();
 
     Filter cache(Filter filterToCache);
 
-    void clear(IndexReader reader);
+    void clear(Object reader);
 
     void clear(String reason);
 
-    EntriesStats entriesStats();
-
-    long evictions();
+    void clear(String reason, String[] keys);
 }

@@ -21,27 +21,32 @@ package org.elasticsearch.index.engine.robin;
 
 import com.google.common.collect.Lists;
 import org.apache.lucene.index.*;
+import org.apache.lucene.index.IndexWriter.IndexReaderWarmer;
 import org.apache.lucene.search.IndexSearcher;
 import org.apache.lucene.search.Query;
 import org.apache.lucene.search.SearcherFactory;
 import org.apache.lucene.search.SearcherManager;
 import org.apache.lucene.store.AlreadyClosedException;
+import org.apache.lucene.store.LockObtainFailedException;
+import org.apache.lucene.util.BytesRef;
+import org.apache.lucene.util.IOUtils;
 import org.elasticsearch.ElasticSearchException;
 import org.elasticsearch.ElasticSearchIllegalStateException;
-import org.elasticsearch.cluster.metadata.IndexMetaData;
 import org.elasticsearch.cluster.routing.operation.hash.djb.DjbHashFunction;
 import org.elasticsearch.common.Nullable;
 import org.elasticsearch.common.Preconditions;
 import org.elasticsearch.common.collect.MapBuilder;
 import org.elasticsearch.common.inject.Inject;
+import org.elasticsearch.common.lucene.HashedBytesRef;
 import org.elasticsearch.common.lucene.Lucene;
 import org.elasticsearch.common.lucene.search.XFilteredQuery;
-import org.elasticsearch.common.lucene.uid.UidField;
+import org.elasticsearch.common.lucene.uid.Versions;
 import org.elasticsearch.common.settings.Settings;
 import org.elasticsearch.common.unit.ByteSizeUnit;
 import org.elasticsearch.common.unit.ByteSizeValue;
 import org.elasticsearch.common.unit.TimeValue;
 import org.elasticsearch.common.util.concurrent.ConcurrentCollections;
+import org.elasticsearch.common.util.concurrent.EsExecutors;
 import org.elasticsearch.index.VersionType;
 import org.elasticsearch.index.analysis.AnalysisService;
 import org.elasticsearch.index.codec.CodecService;
@@ -49,6 +54,9 @@ import org.elasticsearch.index.deletionpolicy.SnapshotDeletionPolicy;
 import org.elasticsearch.index.deletionpolicy.SnapshotIndexCommit;
 import org.elasticsearch.index.engine.*;
 import org.elasticsearch.index.indexing.ShardIndexingService;
+import org.elasticsearch.index.mapper.Uid;
+import org.elasticsearch.index.merge.OnGoingMerge;
+import org.elasticsearch.index.merge.policy.IndexUpgraderMergePolicy;
 import org.elasticsearch.index.merge.policy.MergePolicyProvider;
 import org.elasticsearch.index.merge.scheduler.MergeSchedulerProvider;
 import org.elasticsearch.index.search.nested.IncludeNestedDocsQuery;
@@ -77,8 +85,6 @@ import java.util.concurrent.locks.ReadWriteLock;
 import java.util.concurrent.locks.ReentrantLock;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
 
-import static org.elasticsearch.common.lucene.Lucene.safeClose;
-
 /**
  *
  */
@@ -88,6 +94,8 @@ public class RobinEngine extends AbstractIndexShardComponent implements Engine {
     private volatile int termIndexInterval;
     private volatile int termIndexDivisor;
     private volatile int indexConcurrency;
+    private volatile boolean compoundOnFlush = true;
+
     private long gcDeletesInMillis;
     private volatile boolean enableGcDeletes = true;
     private volatile String codecName;
@@ -129,10 +137,12 @@ public class RobinEngine extends AbstractIndexShardComponent implements Engine {
     private final AtomicInteger flushing = new AtomicInteger();
     private final Lock flushLock = new ReentrantLock();
 
-    private volatile int onGoingRecoveries = 0;
+    private final RecoveryCounter onGoingRecoveries = new RecoveryCounter();
 
 
-    private final ConcurrentMap<String, VersionValue> versionMap;
+    // A uid (in the form of BytesRef) to the version map
+    // we use the hashed variant since we iterate over it and check removal and additions on existing keys
+    private final ConcurrentMap<HashedBytesRef, VersionValue> versionMap;
 
     private final Object[] dirtyLocks;
 
@@ -140,6 +150,7 @@ public class RobinEngine extends AbstractIndexShardComponent implements Engine {
 
     private final ApplySettings applySettings = new ApplySettings();
 
+    private volatile boolean failOnMergeFailure;
     private Throwable failedEngine = null;
     private final Object failedEngineMutex = new Object();
     private final CopyOnWriteArrayList<FailedEngineListener> failedEngineListeners = new CopyOnWriteArrayList<FailedEngineListener>();
@@ -159,11 +170,11 @@ public class RobinEngine extends AbstractIndexShardComponent implements Engine {
         Preconditions.checkNotNull(deletionPolicy, "Snapshot deletion policy must be provided to the engine");
         Preconditions.checkNotNull(translog, "Translog must be provided to the engine");
 
-        this.gcDeletesInMillis = indexSettings.getAsTime("index.gc_deletes", TimeValue.timeValueSeconds(60)).millis();
+        this.gcDeletesInMillis = indexSettings.getAsTime(INDEX_GC_DELETES, TimeValue.timeValueSeconds(60)).millis();
         this.indexingBufferSize = componentSettings.getAsBytesSize("index_buffer_size", new ByteSizeValue(64, ByteSizeUnit.MB)); // not really important, as it is set by the IndexingMemory manager
-        this.termIndexInterval = indexSettings.getAsInt("index.term_index_interval", IndexWriterConfig.DEFAULT_TERM_INDEX_INTERVAL);
-        this.termIndexDivisor = indexSettings.getAsInt("index.term_index_divisor", 1); // IndexReader#DEFAULT_TERMS_INDEX_DIVISOR
-        this.codecName = indexSettings.get("index.codec", "default");
+        this.termIndexInterval = indexSettings.getAsInt(INDEX_TERM_INDEX_INTERVAL, IndexWriterConfig.DEFAULT_TERM_INDEX_INTERVAL);
+        this.termIndexDivisor = indexSettings.getAsInt(INDEX_TERM_INDEX_DIVISOR, 1); // IndexReader#DEFAULT_TERMS_INDEX_DIVISOR
+        this.codecName = indexSettings.get(INDEX_CODEC, "default");
 
         this.threadPool = threadPool;
         this.indexSettingsService = indexSettingsService;
@@ -177,15 +188,20 @@ public class RobinEngine extends AbstractIndexShardComponent implements Engine {
         this.analysisService = analysisService;
         this.similarityService = similarityService;
         this.codecService = codecService;
-
-        this.indexConcurrency = indexSettings.getAsInt("index.index_concurrency", IndexWriterConfig.DEFAULT_MAX_THREAD_STATES);
-        this.versionMap = ConcurrentCollections.newConcurrentMap();
+        this.compoundOnFlush = indexSettings.getAsBoolean(INDEX_COMPOUND_ON_FLUSH, this.compoundOnFlush);
+        this.indexConcurrency = indexSettings.getAsInt(INDEX_INDEX_CONCURRENCY, Math.max(IndexWriterConfig.DEFAULT_MAX_THREAD_STATES, (int) (EsExecutors.boundedNumberOfProcessors(indexSettings) * 0.65)));
+        this.versionMap = ConcurrentCollections.newConcurrentMapWithAggressiveConcurrency();
         this.dirtyLocks = new Object[indexConcurrency * 50]; // we multiply it to have enough...
         for (int i = 0; i < dirtyLocks.length; i++) {
             dirtyLocks[i] = new Object();
         }
 
         this.indexSettingsService.addListener(applySettings);
+
+        this.failOnMergeFailure = indexSettings.getAsBoolean(INDEX_FAIL_ON_MERGE_FAILURE, true);
+        if (failOnMergeFailure) {
+            this.mergeScheduler.addFailureListener(new FailEngineOnMergeFailure());
+        }
     }
 
     @Override
@@ -212,7 +228,7 @@ public class RobinEngine extends AbstractIndexShardComponent implements Engine {
                     // ignore
                 } catch (FlushNotAllowedEngineException e) {
                     // ignore
-                } catch (Exception e) {
+                } catch (Throwable e) {
                     logger.warn("failed to flush after setting shard to inactive", e);
                 }
             } else {
@@ -248,7 +264,7 @@ public class RobinEngine extends AbstractIndexShardComponent implements Engine {
             try {
                 // commit on a just opened writer will commit even if there are no changes done to it
                 // we rely on that for the commit data translog id key
-                if (DirectoryReader.indexExists(store.directory())) {
+                if (Lucene.indexExists(store.directory())) {
                     Map<String, String> commitUserData = Lucene.readSegmentInfos(store.directory()).getUserData();
                     if (commitUserData.containsKey(Translog.TRANSLOG_ID_KEY)) {
                         translogIdGenerator.set(Long.parseLong(commitUserData.get(Translog.TRANSLOG_ID_KEY)));
@@ -264,26 +280,26 @@ public class RobinEngine extends AbstractIndexShardComponent implements Engine {
                 }
                 translog.newTranslog(translogIdGenerator.get());
                 this.searcherManager = buildSearchManager(indexWriter);
-                SegmentInfos infos = new SegmentInfos();
-                infos.read(store.directory());
-                lastCommittedSegmentInfos = infos;
+                readLastCommittedSegmentsInfo();
             } catch (IOException e) {
                 try {
                     indexWriter.rollback();
                 } catch (IOException e1) {
                     // ignore
                 } finally {
-                    try {
-                        indexWriter.close();
-                    } catch (IOException e1) {
-                        // ignore
-                    }
+                    IOUtils.closeWhileHandlingException(indexWriter);
                 }
                 throw new EngineCreationFailureException(shardId, "failed to open reader on writer", e);
             }
         } finally {
             rwl.writeLock().unlock();
         }
+    }
+
+    private void readLastCommittedSegmentsInfo() throws IOException {
+        SegmentInfos infos = new SegmentInfos();
+        infos.read(store.directory());
+        lastCommittedSegmentInfos = infos;
     }
 
     @Override
@@ -300,10 +316,16 @@ public class RobinEngine extends AbstractIndexShardComponent implements Engine {
         rwl.readLock().lock();
         try {
             if (get.realtime()) {
-                VersionValue versionValue = versionMap.get(get.uid().text());
+                VersionValue versionValue = versionMap.get(versionKey(get.uid()));
                 if (versionValue != null) {
                     if (versionValue.delete()) {
                         return GetResult.NOT_EXISTS;
+                    }
+                    if (get.version() != Versions.MATCH_ANY) {
+                        if (get.versionType().isVersionConflict(versionValue.version(), get.version())) {
+                            Uid uid = Uid.createUid(get.uid().text());
+                            throw new VersionConflictEngineException(shardId, uid.type(), uid.id(), versionValue.version(), get.version());
+                        }
                     }
                     if (!get.loadSource()) {
                         return new GetResult(true, versionValue.version(), null);
@@ -321,23 +343,32 @@ public class RobinEngine extends AbstractIndexShardComponent implements Engine {
             }
 
             // no version, get the version from the index, we know that we refresh on flush
-            Searcher searcher = searcher();
+            Searcher searcher = acquireSearcher("get");
+            final Versions.DocIdAndVersion docIdAndVersion;
             try {
-                List<AtomicReaderContext> readers = searcher.reader().leaves();
-                for (int i = 0; i < readers.size(); i++) {
-                    AtomicReaderContext readerContext = readers.get(i);
-                    UidField.DocIdAndVersion docIdAndVersion = UidField.loadDocIdAndVersion(readerContext, get.uid());
-                    if (docIdAndVersion != null && docIdAndVersion.docId != Lucene.NO_DOC) {
-                        return new GetResult(searcher, docIdAndVersion);
-                    }
-                }
-            } catch (Exception e) {
+                docIdAndVersion = Versions.loadDocIdAndVersion(searcher.reader(), get.uid());
+            } catch (Throwable e) {
                 searcher.release();
                 //TODO: A better exception goes here
-                throw new EngineException(shardId(), "failed to load document", e);
+                throw new EngineException(shardId(), "Couldn't resolve version", e);
             }
-            searcher.release();
-            return GetResult.NOT_EXISTS;
+
+            if (get.version() != Versions.MATCH_ANY && docIdAndVersion != null) {
+                if (get.versionType().isVersionConflict(docIdAndVersion.version, get.version())) {
+                    searcher.release();
+                    Uid uid = Uid.createUid(get.uid().text());
+                    throw new VersionConflictEngineException(shardId, uid.type(), uid.id(), docIdAndVersion.version, get.version());
+                }
+            }
+
+            if (docIdAndVersion != null) {
+                // don't release the searcher on this path, it is the responsability of the caller to call GetResult.release
+                return new GetResult(searcher, docIdAndVersion);
+            } else {
+                searcher.release();
+                return GetResult.NOT_EXISTS;
+            }
+
         } finally {
             rwl.readLock().unlock();
         }
@@ -372,14 +403,14 @@ public class RobinEngine extends AbstractIndexShardComponent implements Engine {
 
     private void innerCreate(Create create, IndexWriter writer) throws IOException {
         synchronized (dirtyLock(create.uid())) {
-            UidField uidField = create.uidField();
+            HashedBytesRef versionKey = versionKey(create.uid());
             final long currentVersion;
-            VersionValue versionValue = versionMap.get(create.uid().text());
+            VersionValue versionValue = versionMap.get(versionKey);
             if (versionValue == null) {
                 currentVersion = loadCurrentVersionFromIndex(create.uid());
             } else {
                 if (enableGcDeletes && versionValue.delete() && (threadPool.estimatedTimeInMillis() - versionValue.time()) > gcDeletesInMillis) {
-                    currentVersion = -1; // deleted, and GC
+                    currentVersion = Versions.NOT_FOUND; // deleted, and GC
                 } else {
                     currentVersion = versionValue.version();
                 }
@@ -387,49 +418,23 @@ public class RobinEngine extends AbstractIndexShardComponent implements Engine {
 
             // same logic as index
             long updatedVersion;
+            long expectedVersion = create.version();
             if (create.origin() == Operation.Origin.PRIMARY) {
-                if (create.versionType() == VersionType.INTERNAL) { // internal version type
-                    long expectedVersion = create.version();
-                    if (expectedVersion != 0 && currentVersion != -2) { // -2 means we don't have a version, so ignore...
-                        // an explicit version is provided, see if there is a conflict
-                        // if the current version is -1, means we did not find anything, and
-                        // a version is provided, so we do expect to find a doc under that version
-                        // this is important, since we don't allow to preset a version in order to handle deletes
-                        if (currentVersion == -1) {
-                            throw new VersionConflictEngineException(shardId, create.type(), create.id(), -1, expectedVersion);
-                        } else if (expectedVersion != currentVersion) {
-                            throw new VersionConflictEngineException(shardId, create.type(), create.id(), currentVersion, expectedVersion);
-                        }
-                    }
-                    updatedVersion = currentVersion < 0 ? 1 : currentVersion + 1;
-                } else { // external version type
-                    // an external version is provided, just check, if a local version exists, that its higher than it
-                    // the actual version checking is one in an external system, and we just want to not index older versions
-                    if (currentVersion >= 0) { // we can check!, its there
-                        if (currentVersion >= create.version()) {
-                            throw new VersionConflictEngineException(shardId, create.type(), create.id(), currentVersion, create.version());
-                        }
-                    }
-                    updatedVersion = create.version();
+                if (create.versionType().isVersionConflict(currentVersion, expectedVersion)) {
+                    throw new VersionConflictEngineException(shardId, create.type(), create.id(), currentVersion, expectedVersion);
                 }
+                updatedVersion = create.versionType().updateVersion(currentVersion, expectedVersion);
             } else { // if (index.origin() == Operation.Origin.REPLICA || index.origin() == Operation.Origin.RECOVERY) {
-                long expectedVersion = create.version();
-                if (currentVersion != -2) { // -2 means we don't have a version, so ignore...
-                    // if it does not exists, and its considered the first index operation (replicas/recovery are 1 of)
-                    // then nothing to check
-                    if (!(currentVersion == -1 && create.version() == 1)) {
-                        // with replicas/recovery, we only check for previous version, we allow to set a future version
-                        if (expectedVersion <= currentVersion) {
-                            if (create.origin() == Operation.Origin.RECOVERY) {
-                                return;
-                            } else {
-                                throw new VersionConflictEngineException(shardId, create.type(), create.id(), currentVersion, expectedVersion);
-                            }
-                        }
+                // replicas treat the version as "external" as it comes from the primary ->
+                // only exploding if the version they got is lower or equal to what they know.
+                if (VersionType.EXTERNAL.isVersionConflict(currentVersion, expectedVersion)) {
+                    if (create.origin() == Operation.Origin.RECOVERY) {
+                        return;
+                    } else {
+                        throw new VersionConflictEngineException(shardId, create.type(), create.id(), currentVersion, expectedVersion);
                     }
                 }
-                // replicas already hold the "future" version
-                updatedVersion = create.version();
+                updatedVersion = VersionType.EXTERNAL.updateVersion(currentVersion, expectedVersion);
             }
 
             // if the doc does not exists or it exists but not delete
@@ -441,7 +446,7 @@ public class RobinEngine extends AbstractIndexShardComponent implements Engine {
                         throw new DocumentAlreadyExistsException(shardId, create.type(), create.id());
                     }
                 }
-            } else if (currentVersion != -1) {
+            } else if (currentVersion != Versions.NOT_FOUND) {
                 // its not deleted, its already there
                 if (create.origin() == Operation.Origin.RECOVERY) {
                     return;
@@ -450,7 +455,6 @@ public class RobinEngine extends AbstractIndexShardComponent implements Engine {
                 }
             }
 
-            uidField.version(updatedVersion);
             create.version(updatedVersion);
 
             if (create.docs().size() > 1) {
@@ -460,7 +464,7 @@ public class RobinEngine extends AbstractIndexShardComponent implements Engine {
             }
             Translog.Location translogLocation = translog.add(new Translog.Create(create));
 
-            versionMap.put(create.uid().text(), new VersionValue(updatedVersion, false, threadPool.estimatedTimeInMillis(), translogLocation));
+            versionMap.put(versionKey, new VersionValue(updatedVersion, false, threadPool.estimatedTimeInMillis(), translogLocation));
 
             indexingService.postCreateUnderLock(create);
         }
@@ -496,76 +500,54 @@ public class RobinEngine extends AbstractIndexShardComponent implements Engine {
 
     private void innerIndex(Index index, IndexWriter writer) throws IOException {
         synchronized (dirtyLock(index.uid())) {
-            UidField uidField = index.uidField();
+            HashedBytesRef versionKey = versionKey(index.uid());
             final long currentVersion;
-            VersionValue versionValue = versionMap.get(index.uid().text());
+            VersionValue versionValue = versionMap.get(versionKey);
             if (versionValue == null) {
                 currentVersion = loadCurrentVersionFromIndex(index.uid());
             } else {
                 if (enableGcDeletes && versionValue.delete() && (threadPool.estimatedTimeInMillis() - versionValue.time()) > gcDeletesInMillis) {
-                    currentVersion = -1; // deleted, and GC
+                    currentVersion = Versions.NOT_FOUND; // deleted, and GC
                 } else {
                     currentVersion = versionValue.version();
                 }
             }
 
             long updatedVersion;
+            long expectedVersion = index.version();
             if (index.origin() == Operation.Origin.PRIMARY) {
-                if (index.versionType() == VersionType.INTERNAL) { // internal version type
-                    long expectedVersion = index.version();
-                    if (expectedVersion != 0 && currentVersion != -2) { // -2 means we don't have a version, so ignore...
-                        // an explicit version is provided, see if there is a conflict
-                        // if the current version is -1, means we did not find anything, and
-                        // a version is provided, so we do expect to find a doc under that version
-                        // this is important, since we don't allow to preset a version in order to handle deletes
-                        if (currentVersion == -1) {
-                            throw new VersionConflictEngineException(shardId, index.type(), index.id(), -1, expectedVersion);
-                        } else if (expectedVersion != currentVersion) {
-                            throw new VersionConflictEngineException(shardId, index.type(), index.id(), currentVersion, expectedVersion);
-                        }
-                    }
-                    updatedVersion = currentVersion < 0 ? 1 : currentVersion + 1;
-                } else { // external version type
-                    // an external version is provided, just check, if a local version exists, that its higher than it
-                    // the actual version checking is one in an external system, and we just want to not index older versions
-                    if (currentVersion >= 0) { // we can check!, its there
-                        if (currentVersion >= index.version()) {
-                            throw new VersionConflictEngineException(shardId, index.type(), index.id(), currentVersion, index.version());
-                        }
-                    }
-                    updatedVersion = index.version();
+                if (index.versionType().isVersionConflict(currentVersion, expectedVersion)) {
+                    throw new VersionConflictEngineException(shardId, index.type(), index.id(), currentVersion, expectedVersion);
                 }
+
+                updatedVersion = index.versionType().updateVersion(currentVersion, expectedVersion);
+
             } else { // if (index.origin() == Operation.Origin.REPLICA || index.origin() == Operation.Origin.RECOVERY) {
-                long expectedVersion = index.version();
-                if (currentVersion != -2) { // -2 means we don't have a version, so ignore...
-                    // if it does not exists, and its considered the first index operation (replicas/recovery are 1 of)
-                    // then nothing to check
-                    if (!(currentVersion == -1 && index.version() == 1)) {
-                        // with replicas/recovery, we only check for previous version, we allow to set a future version
-                        if (expectedVersion <= currentVersion) {
-                            if (index.origin() == Operation.Origin.RECOVERY) {
-                                return;
-                            } else {
-                                throw new VersionConflictEngineException(shardId, index.type(), index.id(), currentVersion, expectedVersion);
-                            }
-                        }
+                // replicas treat the version as "external" as it comes from the primary ->
+                // only exploding if the version they got is lower or equal to what they know.
+                if (VersionType.EXTERNAL.isVersionConflict(currentVersion, expectedVersion)) {
+                    if (index.origin() == Operation.Origin.RECOVERY) {
+                        return;
+                    } else {
+                        throw new VersionConflictEngineException(shardId, index.type(), index.id(), currentVersion, expectedVersion);
                     }
                 }
-                // replicas already hold the "future" version
-                updatedVersion = index.version();
+                updatedVersion = VersionType.EXTERNAL.updateVersion(currentVersion, expectedVersion);
             }
 
-            uidField.version(updatedVersion);
             index.version(updatedVersion);
-
-            if (currentVersion == -1) {
+            if (currentVersion == Versions.NOT_FOUND) {
                 // document does not exists, we can optimize for create
+                index.created(true);
                 if (index.docs().size() > 1) {
                     writer.addDocuments(index.docs(), index.analyzer());
                 } else {
                     writer.addDocument(index.docs().get(0), index.analyzer());
                 }
             } else {
+                if (versionValue != null) {
+                    index.created(versionValue.delete()); // we have a delete which is not GC'ed...
+                }
                 if (index.docs().size() > 1) {
                     writer.updateDocuments(index.uid(), index.docs(), index.analyzer());
                 } else {
@@ -574,7 +556,7 @@ public class RobinEngine extends AbstractIndexShardComponent implements Engine {
             }
             Translog.Location translogLocation = translog.add(new Translog.Index(index));
 
-            versionMap.put(index.uid().text(), new VersionValue(updatedVersion, false, threadPool.estimatedTimeInMillis(), translogLocation));
+            versionMap.put(versionKey, new VersionValue(updatedVersion, false, threadPool.estimatedTimeInMillis(), translogLocation));
 
             indexingService.postIndexUnderLock(index);
         }
@@ -610,74 +592,55 @@ public class RobinEngine extends AbstractIndexShardComponent implements Engine {
     private void innerDelete(Delete delete, IndexWriter writer) throws IOException {
         synchronized (dirtyLock(delete.uid())) {
             final long currentVersion;
-            VersionValue versionValue = versionMap.get(delete.uid().text());
+            HashedBytesRef versionKey = versionKey(delete.uid());
+            VersionValue versionValue = versionMap.get(versionKey);
             if (versionValue == null) {
                 currentVersion = loadCurrentVersionFromIndex(delete.uid());
             } else {
                 if (enableGcDeletes && versionValue.delete() && (threadPool.estimatedTimeInMillis() - versionValue.time()) > gcDeletesInMillis) {
-                    currentVersion = -1; // deleted, and GC
+                    currentVersion = Versions.NOT_FOUND; // deleted, and GC
                 } else {
                     currentVersion = versionValue.version();
                 }
             }
 
             long updatedVersion;
+            long expectedVersion = delete.version();
             if (delete.origin() == Operation.Origin.PRIMARY) {
-                if (delete.versionType() == VersionType.INTERNAL) { // internal version type
-                    if (delete.version() != 0 && currentVersion != -2) { // -2 means we don't have a version, so ignore...
-                        // an explicit version is provided, see if there is a conflict
-                        // if the current version is -1, means we did not find anything, and
-                        // a version is provided, so we do expect to find a doc under that version
-                        if (currentVersion == -1) {
-                            throw new VersionConflictEngineException(shardId, delete.type(), delete.id(), -1, delete.version());
-                        } else if (delete.version() != currentVersion) {
-                            throw new VersionConflictEngineException(shardId, delete.type(), delete.id(), currentVersion, delete.version());
-                        }
-                    }
-                    updatedVersion = currentVersion < 0 ? 1 : currentVersion + 1;
-                } else { // External
-                    if (currentVersion == -1) {
-                        // its an external version, that's fine, we allow it to be set
-                        //throw new VersionConflictEngineException(shardId, delete.type(), delete.id(), -1, delete.version());
-                    } else if (currentVersion >= delete.version()) {
-                        throw new VersionConflictEngineException(shardId, delete.type(), delete.id(), currentVersion, delete.version());
-                    }
-                    updatedVersion = delete.version();
+                if (delete.versionType().isVersionConflict(currentVersion, expectedVersion)) {
+                    throw new VersionConflictEngineException(shardId, delete.type(), delete.id(), currentVersion, expectedVersion);
                 }
+
+                updatedVersion = delete.versionType().updateVersion(currentVersion, expectedVersion);
+
             } else { // if (index.origin() == Operation.Origin.REPLICA || index.origin() == Operation.Origin.RECOVERY) {
-                // on replica, the version is the future value expected (returned from the operation on the primary)
-                if (currentVersion != -2) { // -2 means we don't have a version in the index, ignore
-                    // only check if we have a version for it, otherwise, ignore (see later)
-                    if (currentVersion != -1) {
-                        // with replicas, we only check for previous version, we allow to set a future version
-                        if (delete.version() <= currentVersion) {
-                            if (delete.origin() == Operation.Origin.RECOVERY) {
-                                return;
-                            } else {
-                                throw new VersionConflictEngineException(shardId, delete.type(), delete.id(), currentVersion - 1, delete.version());
-                            }
-                        }
+                // replicas treat the version as "external" as it comes from the primary ->
+                // only exploding if the version they got is lower or equal to what they know.
+                if (VersionType.EXTERNAL.isVersionConflict(currentVersion, expectedVersion)) {
+                    if (delete.origin() == Operation.Origin.RECOVERY) {
+                        return;
+                    } else {
+                        throw new VersionConflictEngineException(shardId, delete.type(), delete.id(), currentVersion - 1, expectedVersion);
                     }
                 }
-                // replicas already hold the "future" version
-                updatedVersion = delete.version();
+                updatedVersion = VersionType.EXTERNAL.updateVersion(currentVersion, expectedVersion);
             }
 
-            if (currentVersion == -1) {
+            if (currentVersion == Versions.NOT_FOUND) {
                 // doc does not exists and no prior deletes
                 delete.version(updatedVersion).notFound(true);
                 Translog.Location translogLocation = translog.add(new Translog.Delete(delete));
-                versionMap.put(delete.uid().text(), new VersionValue(updatedVersion, true, threadPool.estimatedTimeInMillis(), translogLocation));
+                versionMap.put(versionKey, new VersionValue(updatedVersion, true, threadPool.estimatedTimeInMillis(), translogLocation));
             } else if (versionValue != null && versionValue.delete()) {
                 // a "delete on delete", in this case, we still increment the version, log it, and return that version
                 delete.version(updatedVersion).notFound(true);
                 Translog.Location translogLocation = translog.add(new Translog.Delete(delete));
-                versionMap.put(delete.uid().text(), new VersionValue(updatedVersion, true, threadPool.estimatedTimeInMillis(), translogLocation));
+                versionMap.put(versionKey, new VersionValue(updatedVersion, true, threadPool.estimatedTimeInMillis(), translogLocation));
             } else {
                 delete.version(updatedVersion);
                 writer.deleteDocuments(delete.uid());
                 Translog.Location translogLocation = translog.add(new Translog.Delete(delete));
-                versionMap.put(delete.uid().text(), new VersionValue(updatedVersion, true, threadPool.estimatedTimeInMillis(), translogLocation));
+                versionMap.put(versionKey, new VersionValue(updatedVersion, true, threadPool.estimatedTimeInMillis(), translogLocation));
             }
 
             indexingService.postDeleteUnderLock(delete);
@@ -719,10 +682,22 @@ public class RobinEngine extends AbstractIndexShardComponent implements Engine {
     }
 
     @Override
-    public Searcher searcher() throws EngineException {
+    public final Searcher acquireSearcher(String source) throws EngineException {
         SearcherManager manager = this.searcherManager;
-        IndexSearcher searcher = manager.acquire();
-        return new RobinSearcher(searcher, manager);
+        if (manager == null) {
+            throw new EngineClosedException(shardId);
+        }
+        try {
+            IndexSearcher searcher = manager.acquire();
+            return newSearcher(source, searcher, manager);
+        } catch (Throwable ex) {
+            logger.error("failed to acquire searcher, source {}", ex, source);
+            throw new EngineException(shardId, ex.getMessage());
+        }
+    }
+
+    protected Searcher newSearcher(String source, IndexSearcher searcher, SearcherManager manager) {
+        return new RobinSearcher(source, searcher, manager);
     }
 
     @Override
@@ -768,7 +743,7 @@ public class RobinEngine extends AbstractIndexShardComponent implements Engine {
                     failEngine(e);
                 }
                 throw new RefreshFailedEngineException(shardId, e);
-            } catch (Exception e) {
+            } catch (Throwable e) {
                 if (indexWriter == null) {
                     throw new EngineClosedException(shardId, failedEngine);
                 } else if (currentWriter != indexWriter) {
@@ -784,12 +759,10 @@ public class RobinEngine extends AbstractIndexShardComponent implements Engine {
 
     @Override
     public void flush(Flush flush) throws EngineException {
-        if (indexWriter == null) {
-            throw new EngineClosedException(shardId, failedEngine);
-        }
+        ensureOpen();
         if (flush.type() == Flush.Type.NEW_WRITER || flush.type() == Flush.Type.COMMIT_TRANSLOG) {
             // check outside the lock as well so we can check without blocking on the write lock
-            if (onGoingRecoveries > 0) {
+            if (onGoingRecoveries.get() > 0) {
                 throw new FlushNotAllowedEngineException(shardId, "recovery is in progress, flush [" + flush.type() + "] is not allowed");
             }
         }
@@ -804,10 +777,8 @@ public class RobinEngine extends AbstractIndexShardComponent implements Engine {
             if (flush.type() == Flush.Type.NEW_WRITER) {
                 rwl.writeLock().lock();
                 try {
-                    if (indexWriter == null) {
-                        throw new EngineClosedException(shardId, failedEngine);
-                    }
-                    if (onGoingRecoveries > 0) {
+                    ensureOpen();
+                    if (onGoingRecoveries.get() > 0) {
                         throw new FlushNotAllowedEngineException(shardId, "Recovery is in progress, flush is not allowed");
                     }
                     // disable refreshing, not dirty
@@ -831,8 +802,11 @@ public class RobinEngine extends AbstractIndexShardComponent implements Engine {
 
                         SearcherManager current = this.searcherManager;
                         this.searcherManager = buildSearchManager(indexWriter);
-                        current.close();
-
+                        try {
+                            IOUtils.close(current);
+                        } catch (Throwable t) {
+                            logger.warn("Failed to close current SearcherManager", t);
+                        }
                         refreshVersioningTable(threadPool.estimatedTimeInMillis());
                     } catch (OutOfMemoryError e) {
                         failEngine(e);
@@ -842,20 +816,17 @@ public class RobinEngine extends AbstractIndexShardComponent implements Engine {
                             failEngine(e);
                         }
                         throw new FlushFailedEngineException(shardId, e);
-                    } catch (Exception e) {
+                    } catch (Throwable e) {
                         throw new FlushFailedEngineException(shardId, e);
                     }
                 } finally {
                     rwl.writeLock().unlock();
                 }
             } else if (flush.type() == Flush.Type.COMMIT_TRANSLOG) {
-                boolean makeTransientCurrent = false;
                 rwl.readLock().lock();
                 try {
-                    if (indexWriter == null) {
-                        throw new EngineClosedException(shardId, failedEngine);
-                    }
-                    if (onGoingRecoveries > 0) {
+                    ensureOpen();
+                    if (onGoingRecoveries.get() > 0) {
                         throw new FlushNotAllowedEngineException(shardId, "Recovery is in progress, flush is not allowed");
                     }
 
@@ -880,7 +851,7 @@ public class RobinEngine extends AbstractIndexShardComponent implements Engine {
                                 failEngine(e);
                             }
                             throw new FlushFailedEngineException(shardId, e);
-                        } catch (Exception e) {
+                        } catch (Throwable e) {
                             translog.revertTransient();
                             throw new FlushFailedEngineException(shardId, e);
                         }
@@ -894,9 +865,7 @@ public class RobinEngine extends AbstractIndexShardComponent implements Engine {
                 // of that translog
                 rwl.readLock().lock();
                 try {
-                    if (indexWriter == null) {
-                        throw new EngineClosedException(shardId, failedEngine);
-                    }
+                    ensureOpen();
                     // we allow to *just* commit if there is an ongoing recovery happening...
                     // its ok to use this, only a flush will cause a new translogId, and we are locked here from
                     // other flushes use flushLock
@@ -913,7 +882,7 @@ public class RobinEngine extends AbstractIndexShardComponent implements Engine {
                             failEngine(e);
                         }
                         throw new FlushFailedEngineException(shardId, e);
-                    } catch (Exception e) {
+                    } catch (Throwable e) {
                         throw new FlushFailedEngineException(shardId, e);
                     }
                 } finally {
@@ -924,28 +893,37 @@ public class RobinEngine extends AbstractIndexShardComponent implements Engine {
             }
 
             // reread the last committed segment infos
+            rwl.readLock().lock();
             try {
-                SegmentInfos infos = new SegmentInfos();
-                infos.read(store.directory());
-                lastCommittedSegmentInfos = infos;
-            } catch (Exception e) {
+                ensureOpen();
+                readLastCommittedSegmentsInfo();
+            } catch (Throwable e) {
                 if (!closed) {
                     logger.warn("failed to read latest segment infos on flush", e);
                 }
+            } finally {
+                rwl.readLock().unlock();
             }
+
         } finally {
             flushLock.unlock();
             flushing.decrementAndGet();
         }
     }
 
+    private void ensureOpen() {
+        if (indexWriter == null) {
+            throw new EngineClosedException(shardId, failedEngine);
+        }
+    }
+
     private void refreshVersioningTable(long time) {
         // we need to refresh in order to clear older version values
-        refresh(new Refresh(true).force(true));
-        for (Map.Entry<String, VersionValue> entry : versionMap.entrySet()) {
-            String id = entry.getKey();
-            synchronized (dirtyLock(id)) { // can we do it without this lock on each value? maybe batch to a set and get the lock once per set?
-                VersionValue versionValue = versionMap.get(id);
+        refresh(new Refresh("version_table").force(true));
+        for (Map.Entry<HashedBytesRef, VersionValue> entry : versionMap.entrySet()) {
+            HashedBytesRef uid = entry.getKey();
+            synchronized (dirtyLock(uid.bytes)) { // can we do it without this lock on each value? maybe batch to a set and get the lock once per set?
+                VersionValue versionValue = versionMap.get(uid);
                 if (versionValue == null) {
                     continue;
                 }
@@ -954,10 +932,10 @@ public class RobinEngine extends AbstractIndexShardComponent implements Engine {
                 }
                 if (versionValue.delete()) {
                     if (enableGcDeletes && (time - versionValue.time()) > gcDeletesInMillis) {
-                        versionMap.remove(id);
+                        versionMap.remove(uid);
                     }
                 } else {
-                    versionMap.remove(id);
+                    versionMap.remove(uid);
                 }
             }
         }
@@ -971,9 +949,7 @@ public class RobinEngine extends AbstractIndexShardComponent implements Engine {
         possibleMergeNeeded = false;
         rwl.readLock().lock();
         try {
-            if (indexWriter == null) {
-                throw new EngineClosedException(shardId, failedEngine);
-            }
+            ensureOpen();
             indexWriter.maybeMerge();
         } catch (OutOfMemoryError e) {
             failEngine(e);
@@ -983,7 +959,7 @@ public class RobinEngine extends AbstractIndexShardComponent implements Engine {
                 failEngine(e);
             }
             throw new OptimizeFailedEngineException(shardId, e);
-        } catch (Exception e) {
+        } catch (Throwable e) {
             throw new OptimizeFailedEngineException(shardId, e);
         } finally {
             rwl.readLock().unlock();
@@ -993,14 +969,12 @@ public class RobinEngine extends AbstractIndexShardComponent implements Engine {
     @Override
     public void optimize(Optimize optimize) throws EngineException {
         if (optimize.flush()) {
-            flush(new Flush().force(true));
+            flush(new Flush().force(true).waitIfOngoing(true));
         }
         if (optimizeMutex.compareAndSet(false, true)) {
             rwl.readLock().lock();
             try {
-                if (indexWriter == null) {
-                    throw new EngineClosedException(shardId, failedEngine);
-                }
+                ensureOpen();
                 if (optimize.onlyExpungeDeletes()) {
                     indexWriter.forceMergeDeletes(false);
                 } else if (optimize.maxNumSegments() <= 0) {
@@ -1017,7 +991,7 @@ public class RobinEngine extends AbstractIndexShardComponent implements Engine {
                     failEngine(e);
                 }
                 throw new OptimizeFailedEngineException(shardId, e);
-            } catch (Exception e) {
+            } catch (Throwable e) {
                 throw new OptimizeFailedEngineException(shardId, e);
             } finally {
                 rwl.readLock().unlock();
@@ -1029,10 +1003,7 @@ public class RobinEngine extends AbstractIndexShardComponent implements Engine {
             indexWriter.waitForMerges();
         }
         if (optimize.flush()) {
-            flush(new Flush().force(true));
-        }
-        if (optimize.refresh()) {
-            refresh(new Refresh(false).force(true));
+            flush(new Flush().force(true).waitIfOngoing(true));
         }
     }
 
@@ -1044,8 +1015,10 @@ public class RobinEngine extends AbstractIndexShardComponent implements Engine {
         try {
             snapshotIndexCommit = deletionPolicy.snapshot();
             traslogSnapshot = translog.snapshot();
-        } catch (Exception e) {
-            if (snapshotIndexCommit != null) snapshotIndexCommit.release();
+        } catch (Throwable e) {
+            if (snapshotIndexCommit != null) {
+                snapshotIndexCommit.release();
+            }
             throw new SnapshotFailedEngineException(shardId, e);
         } finally {
             rwl.readLock().unlock();
@@ -1064,9 +1037,7 @@ public class RobinEngine extends AbstractIndexShardComponent implements Engine {
         rwl.readLock().lock();
         try {
             flush(new Flush().type(Flush.Type.COMMIT).waitIfOngoing(true));
-            if (indexWriter == null) {
-                throw new EngineClosedException(shardId, failedEngine);
-            }
+            ensureOpen();
             return deletionPolicy.snapshot();
         } catch (IOException e) {
             throw new SnapshotFailedEngineException(shardId, e);
@@ -1081,7 +1052,10 @@ public class RobinEngine extends AbstractIndexShardComponent implements Engine {
         // this means that next commits will not be allowed once the lock is released
         rwl.writeLock().lock();
         try {
-            onGoingRecoveries++;
+            if (closed) {
+                throw new EngineClosedException(shardId);
+            }
+            onGoingRecoveries.increment();
         } finally {
             rwl.writeLock().unlock();
         }
@@ -1089,15 +1063,15 @@ public class RobinEngine extends AbstractIndexShardComponent implements Engine {
         SnapshotIndexCommit phase1Snapshot;
         try {
             phase1Snapshot = deletionPolicy.snapshot();
-        } catch (Exception e) {
-            --onGoingRecoveries;
+        } catch (Throwable e) {
+            onGoingRecoveries.decrement();
             throw new RecoveryEngineException(shardId, 1, "Snapshot failed", e);
         }
 
         try {
             recoveryHandler.phase1(phase1Snapshot);
-        } catch (Exception e) {
-            --onGoingRecoveries;
+        } catch (Throwable e) {
+            onGoingRecoveries.decrement();
             phase1Snapshot.release();
             if (closed) {
                 e = new EngineClosedException(shardId, e);
@@ -1108,8 +1082,8 @@ public class RobinEngine extends AbstractIndexShardComponent implements Engine {
         Translog.Snapshot phase2Snapshot;
         try {
             phase2Snapshot = translog.snapshot();
-        } catch (Exception e) {
-            --onGoingRecoveries;
+        } catch (Throwable e) {
+            onGoingRecoveries.decrement();
             phase1Snapshot.release();
             if (closed) {
                 e = new EngineClosedException(shardId, e);
@@ -1119,8 +1093,8 @@ public class RobinEngine extends AbstractIndexShardComponent implements Engine {
 
         try {
             recoveryHandler.phase2(phase2Snapshot);
-        } catch (Exception e) {
-            --onGoingRecoveries;
+        } catch (Throwable e) {
+            onGoingRecoveries.decrement();
             phase1Snapshot.release();
             phase2Snapshot.release();
             if (closed) {
@@ -1134,10 +1108,10 @@ public class RobinEngine extends AbstractIndexShardComponent implements Engine {
         try {
             phase3Snapshot = translog.snapshot(phase2Snapshot);
             recoveryHandler.phase3(phase3Snapshot);
-        } catch (Exception e) {
+        } catch (Throwable e) {
             throw new RecoveryEngineException(shardId, 3, "Execution failed", e);
         } finally {
-            --onGoingRecoveries;
+            onGoingRecoveries.decrement();
             rwl.writeLock().unlock();
             phase1Snapshot.release();
             phase2Snapshot.release();
@@ -1148,26 +1122,43 @@ public class RobinEngine extends AbstractIndexShardComponent implements Engine {
     }
 
     @Override
+    public SegmentsStats segmentsStats() {
+        rwl.readLock().lock();
+        try {
+            ensureOpen();
+            Searcher searcher = acquireSearcher("segments_stats");
+            try {
+                SegmentsStats stats = new SegmentsStats();
+                stats.add(searcher.reader().leaves().size());
+                return stats;
+            } finally {
+                searcher.release();
+            }
+        } finally {
+            rwl.readLock().unlock();
+        }
+    }
+
+    @Override
     public List<Segment> segments() {
         rwl.readLock().lock();
         try {
-            IndexWriter indexWriter = this.indexWriter;
-            if (indexWriter == null) {
-                throw new EngineClosedException(shardId, failedEngine);
-            }
+            ensureOpen();
             Map<String, Segment> segments = new HashMap<String, Segment>();
 
             // first, go over and compute the search ones...
-            Searcher searcher = searcher();
+            Searcher searcher = acquireSearcher("segments");
             try {
                 for (AtomicReaderContext reader : searcher.reader().leaves()) {
                     assert reader.reader() instanceof SegmentReader;
-                    SegmentInfoPerCommit info = Lucene.getSegmentInfo((SegmentReader) reader.reader());
+                    SegmentCommitInfo info = ((SegmentReader) reader.reader()).getSegmentInfo();
                     assert !segments.containsKey(info.info.name);
                     Segment segment = new Segment(info.info.name);
                     segment.search = true;
                     segment.docCount = reader.reader().numDocs();
                     segment.delDocCount = reader.reader().numDeletedDocs();
+                    segment.version = info.info.getVersion();
+                    segment.compound = info.info.getUseCompoundFile();
                     try {
                         segment.sizeInBytes = info.sizeInBytes();
                     } catch (IOException e) {
@@ -1182,7 +1173,7 @@ public class RobinEngine extends AbstractIndexShardComponent implements Engine {
             // now, correlate or add the committed ones...
             if (lastCommittedSegmentInfos != null) {
                 SegmentInfos infos = lastCommittedSegmentInfos;
-                for (SegmentInfoPerCommit info : infos) {
+                for (SegmentCommitInfo info : infos) {
                     Segment segment = segments.get(info.info.name);
                     if (segment == null) {
                         segment = new Segment(info.info.name);
@@ -1190,6 +1181,8 @@ public class RobinEngine extends AbstractIndexShardComponent implements Engine {
                         segment.committed = true;
                         segment.docCount = info.info.getDocCount();
                         segment.delDocCount = info.getDelCount();
+                        segment.version = info.info.getVersion();
+                        segment.compound = info.info.getUseCompoundFile();
                         try {
                             segment.sizeInBytes = info.sizeInBytes();
                         } catch (IOException e) {
@@ -1206,9 +1199,22 @@ public class RobinEngine extends AbstractIndexShardComponent implements Engine {
             Arrays.sort(segmentsArr, new Comparator<Segment>() {
                 @Override
                 public int compare(Segment o1, Segment o2) {
-                    return (int) (o1.generation() - o2.generation());
+                    return (int) (o1.getGeneration() - o2.getGeneration());
                 }
             });
+
+            // fill in the merges flag
+            Set<OnGoingMerge> onGoingMerges = mergeScheduler.onGoingMerges();
+            for (OnGoingMerge onGoingMerge : onGoingMerges) {
+                for (SegmentCommitInfo segmentInfoPerCommit : onGoingMerge.getMergedSegments()) {
+                    for (Segment segment : segmentsArr) {
+                        if (segment.getName().equals(segmentInfoPerCommit.info.name)) {
+                            segment.mergeId = onGoingMerge.getId();
+                            break;
+                        }
+                    }
+                }
+            }
 
             return Arrays.asList(segmentsArr);
         } finally {
@@ -1223,6 +1229,24 @@ public class RobinEngine extends AbstractIndexShardComponent implements Engine {
             innerClose();
         } finally {
             rwl.writeLock().unlock();
+        }
+        try {
+            // wait for recoveries to join and close all resources / IO streams
+            int ongoingRecoveries = onGoingRecoveries.awaitNoRecoveries(5000);
+            if (ongoingRecoveries > 0) {
+                logger.debug("Waiting for ongoing recoveries timed out on close currently ongoing disoveries: [{}]", ongoingRecoveries);
+            }
+        } catch (InterruptedException e) {
+            // ignore & restore interrupt
+            Thread.currentThread().interrupt();
+        }
+
+    }
+
+    class FailEngineOnMergeFailure implements MergeSchedulerProvider.FailureListener {
+        @Override
+        public void onFailedMerge(MergePolicy.MergeException e) {
+            failEngine(e);
         }
     }
 
@@ -1249,8 +1273,10 @@ public class RobinEngine extends AbstractIndexShardComponent implements Engine {
         this.versionMap.clear();
         this.failedEngineListeners.clear();
         try {
-            if (searcherManager != null) {
-                searcherManager.close();
+            try {
+                IOUtils.close(searcherManager);
+            } catch (Throwable t) {
+                logger.warn("Failed to close SearcherManager", t);
             }
             // no need to commit in this case!, we snapshot before we close the shard, so translog and all sync'ed
             if (indexWriter != null) {
@@ -1260,15 +1286,19 @@ public class RobinEngine extends AbstractIndexShardComponent implements Engine {
                     // ignore
                 }
             }
-        } catch (Exception e) {
+        } catch (Throwable e) {
             logger.debug("failed to rollback writer on close", e);
         } finally {
             indexWriter = null;
         }
     }
 
-    private Object dirtyLock(String id) {
-        int hash = DjbHashFunction.DJB_HASH(id);
+    private HashedBytesRef versionKey(Term uid) {
+        return new HashedBytesRef(uid.bytes());
+    }
+
+    private Object dirtyLock(BytesRef uid) {
+        int hash = DjbHashFunction.DJB_HASH(uid.bytes, uid.offset, uid.length);
         // abs returns Integer.MIN_VALUE, so we need to protect against it...
         if (hash == Integer.MIN_VALUE) {
             hash = 0;
@@ -1277,82 +1307,120 @@ public class RobinEngine extends AbstractIndexShardComponent implements Engine {
     }
 
     private Object dirtyLock(Term uid) {
-        return dirtyLock(uid.text());
+        return dirtyLock(uid.bytes());
     }
 
-    private long loadCurrentVersionFromIndex(Term uid) {
-        Searcher searcher = searcher();
+    private long loadCurrentVersionFromIndex(Term uid) throws IOException {
+        Searcher searcher = acquireSearcher("load_version");
         try {
-            List<AtomicReaderContext> readers = searcher.reader().leaves();
-            for (int i = 0; i < readers.size(); i++) {
-                AtomicReaderContext readerContext = readers.get(i);
-                long version = UidField.loadVersion(readerContext, uid);
-                // either -2 (its there, but no version associated), or an actual version
-                if (version != -1) {
-                    return version;
-                }
-            }
-            return -1;
+            return Versions.loadVersion(searcher.reader(), uid);
         } finally {
             searcher.release();
         }
     }
 
+    /**
+     * Returns whether a leaf reader comes from a merge (versus flush or addIndexes).
+     */
+    private static boolean isMergedSegment(AtomicReader reader) {
+        // We expect leaves to be segment readers
+        final Map<String, String> diagnostics = ((SegmentReader) reader).getSegmentInfo().info.getDiagnostics();
+        final String source = diagnostics.get(IndexWriter.SOURCE);
+        assert Arrays.asList(IndexWriter.SOURCE_ADDINDEXES_READERS, IndexWriter.SOURCE_FLUSH, IndexWriter.SOURCE_MERGE).contains(source) : "Unknown source " + source;
+        return IndexWriter.SOURCE_MERGE.equals(source);
+    }
+
     private IndexWriter createWriter() throws IOException {
-        IndexWriter indexWriter = null;
         try {
             // release locks when started
             if (IndexWriter.isLocked(store.directory())) {
                 logger.warn("shard is locked, releasing lock");
                 IndexWriter.unlock(store.directory());
             }
-            boolean create = !DirectoryReader.indexExists(store.directory());
+            boolean create = !Lucene.indexExists(store.directory());
             IndexWriterConfig config = new IndexWriterConfig(Lucene.VERSION, analysisService.defaultIndexAnalyzer());
             config.setOpenMode(create ? IndexWriterConfig.OpenMode.CREATE : IndexWriterConfig.OpenMode.APPEND);
             config.setIndexDeletionPolicy(deletionPolicy);
             config.setMergeScheduler(mergeScheduler.newMergeScheduler());
-            config.setMergePolicy(mergePolicyProvider.newMergePolicy());
+            MergePolicy mergePolicy = mergePolicyProvider.newMergePolicy();
+            // Give us the opportunity to upgrade old segments while performing
+            // background merges
+            mergePolicy = new IndexUpgraderMergePolicy(mergePolicy);
+            config.setMergePolicy(mergePolicy);
             config.setSimilarity(similarityService.similarity());
             config.setRAMBufferSizeMB(indexingBufferSize.mbFrac());
             config.setTermIndexInterval(termIndexInterval);
             config.setReaderTermsIndexDivisor(termIndexDivisor);
             config.setMaxThreadStates(indexConcurrency);
             config.setCodec(codecService.codec(codecName));
-
-            indexWriter = new IndexWriter(store.directory(), config);
-        } catch (IOException e) {
-            safeClose(indexWriter);
-            throw e;
+            /* We set this timeout to a highish value to work around
+             * the default poll interval in the Lucene lock that is 
+             * 1000ms by default. We might need to poll multiple times
+             * here but with 1s poll this is only executed twice at most
+             * in combination with the default writelock timeout*/
+            config.setWriteLockTimeout(5000);
+            config.setUseCompoundFile(this.compoundOnFlush);
+            // Warm-up hook for newly-merged segments. Warming up segments here is better since it will be performed at the end
+            // of the merge operation and won't slow down _refresh
+            config.setMergedSegmentWarmer(new IndexReaderWarmer() {
+                @Override
+                public void warm(AtomicReader reader) throws IOException {
+                    try {
+                        assert isMergedSegment(reader);
+                        final Engine.Searcher searcher = new SimpleSearcher("warmer", new IndexSearcher(reader));
+                        final IndicesWarmer.WarmerContext context = new IndicesWarmer.WarmerContext(shardId, searcher);
+                        if (warmer != null) warmer.warm(context);
+                    } catch (Throwable t) {
+                        // Don't fail a merge if the warm-up failed
+                        if (!closed) {
+                            logger.warn("Warm-up failed", t);
+                        }
+                        if (t instanceof Error) {
+                            // assertion/out-of-memory error, don't ignore those
+                            throw (Error) t;
+                        }
+                    }
+                }
+            });
+            return new IndexWriter(store.directory(), config);
+        } catch (LockObtainFailedException ex) {
+            boolean isLocked = IndexWriter.isLocked(store.directory());
+            logger.warn("Could not lock IndexWriter isLocked [{}]", ex, isLocked);
+            throw ex;
         }
-        return indexWriter;
     }
 
-    static {
-        IndexMetaData.addDynamicSettings(
-                "index.term_index_interval",
-                "index.term_index_divisor",
-                "index.index_concurrency",
-                "index.gc_deletes",
-                "index.codec"
-        );
-    }
-
+    public static final String INDEX_TERM_INDEX_INTERVAL = "index.term_index_interval";
+    public static final String INDEX_TERM_INDEX_DIVISOR = "index.term_index_divisor";
+    public static final String INDEX_INDEX_CONCURRENCY = "index.index_concurrency";
+    public static final String INDEX_COMPOUND_ON_FLUSH = "index.compound_on_flush";
+    public static final String INDEX_GC_DELETES = "index.gc_deletes";
+    public static final String INDEX_FAIL_ON_MERGE_FAILURE = "index.fail_on_merge_failure";
 
     class ApplySettings implements IndexSettingsService.Listener {
+
         @Override
         public void onRefreshSettings(Settings settings) {
-            long gcDeletesInMillis = indexSettings.getAsTime("index.gc_deletes", TimeValue.timeValueMillis(RobinEngine.this.gcDeletesInMillis)).millis();
+            long gcDeletesInMillis = settings.getAsTime(INDEX_GC_DELETES, TimeValue.timeValueMillis(RobinEngine.this.gcDeletesInMillis)).millis();
             if (gcDeletesInMillis != RobinEngine.this.gcDeletesInMillis) {
                 logger.info("updating index.gc_deletes from [{}] to [{}]", TimeValue.timeValueMillis(RobinEngine.this.gcDeletesInMillis), TimeValue.timeValueMillis(gcDeletesInMillis));
                 RobinEngine.this.gcDeletesInMillis = gcDeletesInMillis;
             }
 
-            int termIndexInterval = settings.getAsInt("index.term_index_interval", RobinEngine.this.termIndexInterval);
-            int termIndexDivisor = settings.getAsInt("index.term_index_divisor", RobinEngine.this.termIndexDivisor); // IndexReader#DEFAULT_TERMS_INDEX_DIVISOR
-            int indexConcurrency = settings.getAsInt("index.index_concurrency", RobinEngine.this.indexConcurrency);
-            String codecName = settings.get("index.codec", RobinEngine.this.codecName);
+            final boolean compoundOnFlush = settings.getAsBoolean(INDEX_COMPOUND_ON_FLUSH, RobinEngine.this.compoundOnFlush);
+            if (compoundOnFlush != RobinEngine.this.compoundOnFlush) {
+                logger.info("updating {} from [{}] to [{}]", RobinEngine.INDEX_COMPOUND_ON_FLUSH, RobinEngine.this.compoundOnFlush, compoundOnFlush);
+                RobinEngine.this.compoundOnFlush = compoundOnFlush;
+                indexWriter.getConfig().setUseCompoundFile(compoundOnFlush);
+            }
+
+            int termIndexInterval = settings.getAsInt(INDEX_TERM_INDEX_INTERVAL, RobinEngine.this.termIndexInterval);
+            int termIndexDivisor = settings.getAsInt(INDEX_TERM_INDEX_DIVISOR, RobinEngine.this.termIndexDivisor); // IndexReader#DEFAULT_TERMS_INDEX_DIVISOR
+            int indexConcurrency = settings.getAsInt(INDEX_INDEX_CONCURRENCY, RobinEngine.this.indexConcurrency);
+            boolean failOnMergeFailure = settings.getAsBoolean(INDEX_FAIL_ON_MERGE_FAILURE, RobinEngine.this.failOnMergeFailure);
+            String codecName = settings.get(INDEX_CODEC, RobinEngine.this.codecName);
             boolean requiresFlushing = false;
-            if (termIndexInterval != RobinEngine.this.termIndexInterval || termIndexDivisor != RobinEngine.this.termIndexDivisor) {
+            if (termIndexInterval != RobinEngine.this.termIndexInterval || termIndexDivisor != RobinEngine.this.termIndexDivisor || indexConcurrency != RobinEngine.this.indexConcurrency || !codecName.equals(RobinEngine.this.codecName) || failOnMergeFailure != RobinEngine.this.failOnMergeFailure) {
                 rwl.readLock().lock();
                 try {
                     if (termIndexInterval != RobinEngine.this.termIndexInterval) {
@@ -1376,8 +1444,12 @@ public class RobinEngine extends AbstractIndexShardComponent implements Engine {
                     if (!codecName.equals(RobinEngine.this.codecName)) {
                         logger.info("updating index.codec from [{}] to [{}]", RobinEngine.this.codecName, codecName);
                         RobinEngine.this.codecName = codecName;
-                        // TODO: Lucene 4, I think once someones changes codec, it should be reflected immediately
+                        // we want to flush in this case, so the new codec will be reflected right away...
                         requiresFlushing = true;
+                    }
+                    if (failOnMergeFailure != RobinEngine.this.failOnMergeFailure) {
+                        logger.info("updating {} from [{}] to [{}]", RobinEngine.INDEX_FAIL_ON_MERGE_FAILURE, RobinEngine.this.failOnMergeFailure, failOnMergeFailure);
+                        RobinEngine.this.failOnMergeFailure = failOnMergeFailure;
                     }
                 } finally {
                     rwl.readLock().unlock();
@@ -1395,12 +1467,19 @@ public class RobinEngine extends AbstractIndexShardComponent implements Engine {
 
     static class RobinSearcher implements Searcher {
 
+        private final String source;
         private final IndexSearcher searcher;
         private final SearcherManager manager;
 
-        private RobinSearcher(IndexSearcher searcher, SearcherManager manager) {
+        private RobinSearcher(String source, IndexSearcher searcher, SearcherManager manager) {
+            this.source = source;
             this.searcher = searcher;
             this.manager = manager;
+        }
+
+        @Override
+        public String source() {
+            return this.source;
         }
 
         @Override
@@ -1471,10 +1550,14 @@ public class RobinEngine extends AbstractIndexShardComponent implements Engine {
                         // fresh index writer, just do on all of it
                         newSearcher = searcher;
                     } else {
-                        currentSearcher = searcher();
+                        currentSearcher = acquireSearcher("search_factory");
                         // figure out the newSearcher, with only the new readers that are relevant for us
                         List<IndexReader> readers = Lists.newArrayList();
                         for (AtomicReaderContext newReaderContext : searcher.getIndexReader().leaves()) {
+                            if (isMergedSegment(newReaderContext.reader())) {
+                                // merged segments are already handled by IndexWriterConfig.setMergedSegmentWarmer
+                                continue;
+                            }
                             boolean found = false;
                             for (AtomicReaderContext currentReaderContext : currentSearcher.reader().leaves()) {
                                 if (currentReaderContext.reader().getCoreCacheKey().equals(newReaderContext.reader().getCoreCacheKey())) {
@@ -1495,11 +1578,10 @@ public class RobinEngine extends AbstractIndexShardComponent implements Engine {
 
                     if (newSearcher != null) {
                         IndicesWarmer.WarmerContext context = new IndicesWarmer.WarmerContext(shardId,
-                                new SimpleSearcher(searcher),
-                                new SimpleSearcher(newSearcher));
+                                new SimpleSearcher("warmer", newSearcher));
                         warmer.warm(context);
                     }
-                } catch (Exception e) {
+                } catch (Throwable e) {
                     if (!closed) {
                         logger.warn("failed to prepare/warm", e);
                     }
@@ -1509,16 +1591,40 @@ public class RobinEngine extends AbstractIndexShardComponent implements Engine {
                         currentSearcher.release();
                     }
                     if (newSearcher != null && closeNewSearcher) {
-                        try {
-                            // close the reader since we want decRef the inner readers
-                            newSearcher.getIndexReader().close();
-                        } catch (IOException e) {
-                            // ignore
-                        }
+                        IOUtils.closeWhileHandlingException(newSearcher.getIndexReader()); // ignore
                     }
                 }
             }
             return searcher;
         }
     }
+
+    private static final class RecoveryCounter {
+        private volatile int ongoingRecoveries = 0;
+
+        synchronized void increment() {
+            ongoingRecoveries++;
+        }
+
+        synchronized void decrement() {
+            ongoingRecoveries--;
+            if (ongoingRecoveries == 0) {
+                notifyAll(); // notify waiting threads - we only wait on ongoingRecoveries == 0
+            }
+            assert ongoingRecoveries >= 0 : "ongoingRecoveries must be >= 0 but was: " + ongoingRecoveries;
+        }
+
+        int get() {
+            // volatile read - no sync needed
+            return ongoingRecoveries;
+        }
+
+        synchronized int awaitNoRecoveries(long timeout) throws InterruptedException {
+            if (ongoingRecoveries > 0) { // no loop here - we either time out or we are done!
+                wait(timeout);
+            }
+            return ongoingRecoveries;
+        }
+    }
+
 }

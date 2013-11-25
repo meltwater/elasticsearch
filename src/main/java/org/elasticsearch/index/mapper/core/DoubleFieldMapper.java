@@ -36,8 +36,8 @@ import org.elasticsearch.common.Numbers;
 import org.elasticsearch.common.settings.Settings;
 import org.elasticsearch.common.xcontent.XContentBuilder;
 import org.elasticsearch.common.xcontent.XContentParser;
-import org.elasticsearch.index.analysis.NamedAnalyzer;
 import org.elasticsearch.index.analysis.NumericDoubleAnalyzer;
+import org.elasticsearch.index.codec.docvaluesformat.DocValuesFormatProvider;
 import org.elasticsearch.index.codec.postingsformat.PostingsFormatProvider;
 import org.elasticsearch.index.fielddata.FieldDataType;
 import org.elasticsearch.index.fielddata.IndexFieldDataService;
@@ -48,6 +48,7 @@ import org.elasticsearch.index.search.NumericRangeFieldDataFilter;
 import org.elasticsearch.index.similarity.SimilarityProvider;
 
 import java.io.IOException;
+import java.util.List;
 import java.util.Map;
 
 import static org.elasticsearch.common.xcontent.support.XContentMapValues.nodeDoubleValue;
@@ -89,8 +90,8 @@ public class DoubleFieldMapper extends NumberFieldMapper<Double> {
         public DoubleFieldMapper build(BuilderContext context) {
             fieldType.setOmitNorms(fieldType.omitNorms() && boost == 1.0f);
             DoubleFieldMapper fieldMapper = new DoubleFieldMapper(buildNames(context),
-                    precisionStep, boost, fieldType, nullValue,
-                    ignoreMalformed(context), provider, similarity, fieldDataSettings);
+                    precisionStep, boost, fieldType, nullValue, ignoreMalformed(context), postingsProvider, docValuesProvider,
+                    similarity, fieldDataSettings, context.indexSettings());
             fieldMapper.includeInAll(includeInAll);
             return fieldMapper;
         }
@@ -119,10 +120,11 @@ public class DoubleFieldMapper extends NumberFieldMapper<Double> {
 
     protected DoubleFieldMapper(Names names, int precisionStep, float boost, FieldType fieldType,
                                 Double nullValue, Explicit<Boolean> ignoreMalformed,
-                                PostingsFormatProvider provider, SimilarityProvider similarity, @Nullable Settings fieldDataSettings) {
-        super(names, precisionStep, boost, fieldType,
-                ignoreMalformed, new NamedAnalyzer("_double/" + precisionStep, new NumericDoubleAnalyzer(precisionStep)),
-                new NamedAnalyzer("_double/max", new NumericDoubleAnalyzer(Integer.MAX_VALUE)), provider, similarity, fieldDataSettings);
+                                PostingsFormatProvider postingsProvider, DocValuesFormatProvider docValuesProvider,
+                                SimilarityProvider similarity, @Nullable Settings fieldDataSettings, Settings indexSettings) {
+        super(names, precisionStep, boost, fieldType, ignoreMalformed,
+                NumericDoubleAnalyzer.buildNamedAnalyzer(precisionStep), NumericDoubleAnalyzer.buildNamedAnalyzer(Integer.MAX_VALUE),
+                postingsProvider, docValuesProvider, similarity, fieldDataSettings, indexSettings);
         this.nullValue = nullValue;
         this.nullValueAsString = nullValue == null ? null : nullValue.toString();
     }
@@ -158,20 +160,10 @@ public class DoubleFieldMapper extends NumberFieldMapper<Double> {
 
     @Override
     public BytesRef indexedValueForSearch(Object value) {
-        long longValue = NumericUtils.doubleToSortableLong(parseValue(value));
+        long longValue = NumericUtils.doubleToSortableLong(parseDoubleValue(value));
         BytesRef bytesRef = new BytesRef();
-        NumericUtils.longToPrefixCoded(longValue, precisionStep(), bytesRef);
+        NumericUtils.longToPrefixCoded(longValue, 0, bytesRef);   // 0 because of exact match
         return bytesRef;
-    }
-
-    private double parseValue(Object value) {
-        if (value instanceof Number) {
-            return ((Number) value).doubleValue();
-        }
-        if (value instanceof BytesRef) {
-            return Double.parseDouble(((BytesRef) value).utf8ToString());
-        }
-        return Double.parseDouble(value.toString());
     }
 
     @Override
@@ -186,7 +178,7 @@ public class DoubleFieldMapper extends NumberFieldMapper<Double> {
 
     @Override
     public Query termQuery(Object value, @Nullable QueryParseContext context) {
-        double dValue = parseValue(value);
+        double dValue = parseDoubleValue(value);
         return NumericRangeQuery.newDoubleRange(names.indexName(), precisionStep,
                 dValue, dValue, true, true);
     }
@@ -194,14 +186,14 @@ public class DoubleFieldMapper extends NumberFieldMapper<Double> {
     @Override
     public Query rangeQuery(Object lowerTerm, Object upperTerm, boolean includeLower, boolean includeUpper, @Nullable QueryParseContext context) {
         return NumericRangeQuery.newDoubleRange(names.indexName(), precisionStep,
-                lowerTerm == null ? null : parseValue(lowerTerm),
-                upperTerm == null ? null : parseValue(upperTerm),
+                lowerTerm == null ? null : parseDoubleValue(lowerTerm),
+                upperTerm == null ? null : parseDoubleValue(upperTerm),
                 includeLower, includeUpper);
     }
 
     @Override
     public Filter termFilter(Object value, @Nullable QueryParseContext context) {
-        double dValue = parseValue(value);
+        double dValue = parseDoubleValue(value);
         return NumericRangeFilter.newDoubleRange(names.indexName(), precisionStep,
                 dValue, dValue, true, true);
     }
@@ -209,8 +201,8 @@ public class DoubleFieldMapper extends NumberFieldMapper<Double> {
     @Override
     public Filter rangeFilter(Object lowerTerm, Object upperTerm, boolean includeLower, boolean includeUpper, @Nullable QueryParseContext context) {
         return NumericRangeFilter.newDoubleRange(names.indexName(), precisionStep,
-                lowerTerm == null ? null : parseValue(lowerTerm),
-                upperTerm == null ? null : parseValue(upperTerm),
+                lowerTerm == null ? null : parseDoubleValue(lowerTerm),
+                upperTerm == null ? null : parseDoubleValue(upperTerm),
                 includeLower, includeUpper);
     }
 
@@ -221,8 +213,8 @@ public class DoubleFieldMapper extends NumberFieldMapper<Double> {
     @Override
     public Filter rangeFilter(IndexFieldDataService fieldData, Object lowerTerm, Object upperTerm, boolean includeLower, boolean includeUpper, @Nullable QueryParseContext context) {
         return NumericRangeFieldDataFilter.newDoubleRange((IndexNumericFieldData) fieldData.getForField(this),
-                lowerTerm == null ? null : parseValue(lowerTerm),
-                upperTerm == null ? null : parseValue(upperTerm),
+                lowerTerm == null ? null : parseDoubleValue(lowerTerm),
+                upperTerm == null ? null : parseDoubleValue(upperTerm),
                 includeLower, includeUpper);
     }
 
@@ -243,21 +235,21 @@ public class DoubleFieldMapper extends NumberFieldMapper<Double> {
     }
 
     @Override
-    protected Field innerParseCreateField(ParseContext context) throws IOException {
+    protected void innerParseCreateField(ParseContext context, List<Field> fields) throws IOException {
         double value;
         float boost = this.boost;
         if (context.externalValueSet()) {
             Object externalValue = context.externalValue();
             if (externalValue == null) {
                 if (nullValue == null) {
-                    return null;
+                    return;
                 }
                 value = nullValue;
             } else if (externalValue instanceof String) {
                 String sExternalValue = (String) externalValue;
                 if (sExternalValue.length() == 0) {
                     if (nullValue == null) {
-                        return null;
+                        return;
                     }
                     value = nullValue;
                 } else {
@@ -274,7 +266,7 @@ public class DoubleFieldMapper extends NumberFieldMapper<Double> {
             if (parser.currentToken() == XContentParser.Token.VALUE_NULL ||
                     (parser.currentToken() == XContentParser.Token.VALUE_STRING && parser.textLength() == 0)) {
                 if (nullValue == null) {
-                    return null;
+                    return;
                 }
                 value = nullValue;
                 if (nullValueAsString != null && (context.includeInAll(includeInAll, this))) {
@@ -301,7 +293,7 @@ public class DoubleFieldMapper extends NumberFieldMapper<Double> {
                 }
                 if (objValue == null) {
                     // no value
-                    return null;
+                    return;
                 }
                 value = objValue;
             } else {
@@ -312,9 +304,14 @@ public class DoubleFieldMapper extends NumberFieldMapper<Double> {
             }
         }
 
-        CustomDoubleNumericField field = new CustomDoubleNumericField(this, value, fieldType);
-        field.setBoost(boost);
-        return field;
+        if (fieldType.indexed() || fieldType.stored()) {
+            CustomDoubleNumericField field = new CustomDoubleNumericField(this, value, fieldType);
+            field.setBoost(boost);
+            fields.add(field);
+        }
+        if (hasDocValues()) {
+            fields.add(toDocValues(value));
+        }
     }
 
     @Override
@@ -335,17 +332,21 @@ public class DoubleFieldMapper extends NumberFieldMapper<Double> {
     }
 
     @Override
-    protected void doXContentBody(XContentBuilder builder) throws IOException {
-        super.doXContentBody(builder);
-        if (precisionStep != Defaults.PRECISION_STEP) {
+    protected void doXContentBody(XContentBuilder builder, boolean includeDefaults, Params params) throws IOException {
+        super.doXContentBody(builder, includeDefaults, params);
+
+        if (includeDefaults || precisionStep != Defaults.PRECISION_STEP) {
             builder.field("precision_step", precisionStep);
         }
-        if (nullValue != null) {
+        if (includeDefaults || nullValue != null) {
             builder.field("null_value", nullValue);
         }
         if (includeInAll != null) {
             builder.field("include_in_all", includeInAll);
+        } else if (includeDefaults) {
+            builder.field("include_in_all", false);
         }
+
     }
 
     public static class CustomDoubleNumericField extends CustomNumericField {
@@ -355,7 +356,7 @@ public class DoubleFieldMapper extends NumberFieldMapper<Double> {
         private final NumberFieldMapper mapper;
 
         public CustomDoubleNumericField(NumberFieldMapper mapper, double number, FieldType fieldType) {
-            super(mapper, mapper.fieldType().stored() ? number : null, fieldType);
+            super(mapper, number, fieldType);
             this.mapper = mapper;
             this.number = number;
         }

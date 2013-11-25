@@ -42,8 +42,9 @@ import java.util.List;
 import java.util.concurrent.atomic.AtomicReferenceArray;
 
 /**
- *
+ * @deprecated use Snapshot/Restore API instead
  */
+@Deprecated
 public class TransportGatewaySnapshotAction extends TransportBroadcastOperationAction<GatewaySnapshotRequest, GatewaySnapshotResponse, ShardGatewaySnapshotRequest, ShardGatewaySnapshotResponse> {
 
     private final IndicesService indicesService;
@@ -68,11 +69,6 @@ public class TransportGatewaySnapshotAction extends TransportBroadcastOperationA
     @Override
     protected GatewaySnapshotRequest newRequest() {
         return new GatewaySnapshotRequest();
-    }
-
-    @Override
-    protected boolean ignoreNonActiveExceptions() {
-        return true;
     }
 
     @Override

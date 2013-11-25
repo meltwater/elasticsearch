@@ -19,8 +19,9 @@
 
 package org.elasticsearch.action.admin.indices.mapping.delete;
 
+import org.elasticsearch.Version;
 import org.elasticsearch.action.ActionRequestValidationException;
-import org.elasticsearch.action.support.master.MasterNodeOperationRequest;
+import org.elasticsearch.action.support.master.AcknowledgedRequest;
 import org.elasticsearch.common.io.stream.StreamInput;
 import org.elasticsearch.common.io.stream.StreamOutput;
 
@@ -29,19 +30,19 @@ import java.io.IOException;
 import static org.elasticsearch.action.ValidateActions.addValidationError;
 
 /**
- *
+ * Represents a request to delete a mapping
  */
-public class DeleteMappingRequest extends MasterNodeOperationRequest<DeleteMappingRequest> {
+public class DeleteMappingRequest extends AcknowledgedRequest<DeleteMappingRequest> {
 
     private String[] indices;
 
-    private String mappingType;
+    private String type;
 
     DeleteMappingRequest() {
     }
 
     /**
-     * Constructs a new put mapping request against one or more indices. If nothing is set then
+     * Constructs a new delete mapping request against one or more indices. If nothing is set then
      * it will be executed against all indices.
      */
     public DeleteMappingRequest(String... indices) {
@@ -51,14 +52,14 @@ public class DeleteMappingRequest extends MasterNodeOperationRequest<DeleteMappi
     @Override
     public ActionRequestValidationException validate() {
         ActionRequestValidationException validationException = null;
-        if (mappingType == null) {
+        if (type == null) {
             validationException = addValidationError("mapping type is missing", validationException);
         }
         return validationException;
     }
 
     /**
-     * Sets the indices this put mapping operation will execute on.
+     * Sets the indices this delete mapping operation will execute on.
      */
     public DeleteMappingRequest indices(String[] indices) {
         this.indices = indices;
@@ -66,7 +67,7 @@ public class DeleteMappingRequest extends MasterNodeOperationRequest<DeleteMappi
     }
 
     /**
-     * The indices the mappings will be put.
+     * The indices the mappings will be removed from.
      */
     public String[] indices() {
         return indices;
@@ -76,14 +77,14 @@ public class DeleteMappingRequest extends MasterNodeOperationRequest<DeleteMappi
      * The mapping type.
      */
     public String type() {
-        return mappingType;
+        return type;
     }
 
     /**
      * The type of the mappings to remove.
      */
-    public DeleteMappingRequest type(String mappingType) {
-        this.mappingType = mappingType;
+    public DeleteMappingRequest type(String type) {
+        this.type = type;
         return this;
     }
 
@@ -95,8 +96,9 @@ public class DeleteMappingRequest extends MasterNodeOperationRequest<DeleteMappi
             indices[i] = in.readString();
         }
         if (in.readBoolean()) {
-            mappingType = in.readString();
+            type = in.readString();
         }
+        readTimeout(in, Version.V_0_90_6);
     }
 
     @Override
@@ -110,11 +112,12 @@ public class DeleteMappingRequest extends MasterNodeOperationRequest<DeleteMappi
                 out.writeString(index);
             }
         }
-        if (mappingType == null) {
+        if (type == null) {
             out.writeBoolean(false);
         } else {
             out.writeBoolean(true);
-            out.writeString(mappingType);
+            out.writeString(type);
         }
+        writeTimeout(out, Version.V_0_90_6);
     }
 }

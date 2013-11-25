@@ -245,7 +245,7 @@ public class BulkProcessor {
     }
 
     public synchronized BulkProcessor add(BytesReference data, boolean contentUnsafe, @Nullable String defaultIndex, @Nullable String defaultType, @Nullable Object payload) throws Exception {
-        bulkRequest.add(data, contentUnsafe, defaultIndex, defaultType, payload);
+        bulkRequest.add(data, contentUnsafe, defaultIndex, defaultType, null, payload, true);
         executeIfNeeded();
         return this;
     }
@@ -276,32 +276,39 @@ public class BulkProcessor {
                 listener.afterBulk(executionId, bulkRequest, e);
             }
         } else {
+            boolean success = false;
             try {
                 semaphore.acquire();
-            } catch (InterruptedException e) {
-                listener.afterBulk(executionId, bulkRequest, e);
-                return;
-            }
-            listener.beforeBulk(executionId, bulkRequest);
-            client.bulk(bulkRequest, new ActionListener<BulkResponse>() {
-                @Override
-                public void onResponse(BulkResponse response) {
-                    try {
-                        listener.afterBulk(executionId, bulkRequest, response);
-                    } finally {
-                        semaphore.release();
+                listener.beforeBulk(executionId, bulkRequest);
+                client.bulk(bulkRequest, new ActionListener<BulkResponse>() {
+                    @Override
+                    public void onResponse(BulkResponse response) {
+                        try {
+                            listener.afterBulk(executionId, bulkRequest, response);
+                        } finally {
+                            semaphore.release();
+                        }
                     }
-                }
 
-                @Override
-                public void onFailure(Throwable e) {
-                    try {
-                        listener.afterBulk(executionId, bulkRequest, e);
-                    } finally {
-                        semaphore.release();
+                    @Override
+                    public void onFailure(Throwable e) {
+                        try {
+                            listener.afterBulk(executionId, bulkRequest, e);
+                        } finally {
+                            semaphore.release();
+                        }
                     }
-                }
-            });
+                });
+                success = true;
+            } catch (InterruptedException e) {
+                Thread.interrupted();
+                listener.afterBulk(executionId, bulkRequest, e);
+            } finally {
+                 if (!success) {  // if we fail on client.bulk() release the semaphore
+                     semaphore.release();
+                 }
+            }
+
         }
     }
 

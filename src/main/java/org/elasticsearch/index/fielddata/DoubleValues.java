@@ -20,222 +20,138 @@
 package org.elasticsearch.index.fielddata;
 
 import org.elasticsearch.ElasticSearchIllegalStateException;
-import org.elasticsearch.index.fielddata.util.DoubleArrayRef;
-import org.elasticsearch.index.fielddata.util.IntArrayRef;
-import org.elasticsearch.index.fielddata.util.LongArrayRef;
+import org.elasticsearch.index.fielddata.ordinals.Ordinals;
+import org.elasticsearch.index.fielddata.ordinals.Ordinals.Docs;
 
 /**
+ * A state-full lightweight per document set of <code>double</code> values.
+ *
+ * To iterate over values in a document use the following pattern:
+ * <pre>
+ *   DoubleValues values = ..;
+ *   final int numValues = values.setDocId(docId);
+ *   for (int i = 0; i < numValues; i++) {
+ *       double value = values.nextValue();
+ *       // process value
+ *   }
+ * </pre>
  */
-public interface DoubleValues {
+public abstract class DoubleValues {
 
-    static final DoubleValues EMPTY = new Empty();
+    /**
+     * An empty {@link DoubleValues instance}
+     */
+    public static final DoubleValues EMPTY = new Empty();
+
+    private final boolean multiValued;
+
+    protected int docId;
+
+    /**
+     * Creates a new {@link DoubleValues} instance
+     * @param multiValued <code>true</code> iff this instance is multivalued. Otherwise <code>false</code>.
+     */
+    protected DoubleValues(boolean multiValued) {
+        this.multiValued = multiValued;
+    }
 
     /**
      * Is one of the documents in this field data values is multi valued?
      */
-    boolean isMultiValued();
+    public final boolean isMultiValued() {
+        return multiValued;
+    }
 
     /**
-     * Is there a value for this doc?
+     * Sets iteration to the specified docID and returns the number of
+     * values for this document ID,
+     * @param docId document ID
+     *
+     * @see #nextValue()
      */
-    boolean hasValue(int docId);
+    public abstract int setDocument(int docId);
 
-    double getValue(int docId);
+    /**
+     * Returns the next value for the current docID set to {@link #setDocument(int)}.
+     * This method should only be called <tt>N</tt> times where <tt>N</tt> is the number
+     * returned from {@link #setDocument(int)}. If called more than <tt>N</tt> times the behavior
+     * is undefined.
+     * <p>
+     * If this instance returns ordered values the <tt>Nth</tt> value is strictly less than the <tt>N+1</tt> value with
+     * respect to the {@link AtomicFieldData.Order} returned from {@link #getOrder()}. If this instance returns
+     * <i>unordered</i> values {@link #getOrder()} must return {@link AtomicFieldData.Order#NONE}
+     * Note: the values returned are de-duplicated, only unique values are returned.
+     * </p>
+     *
+     * @return the next value for the current docID set to {@link #setDocument(int)}.
+     */
+    public abstract double nextValue();
 
-    double getValueMissing(int docId, double missingValue);
-
-    DoubleArrayRef getValues(int docId);
-
-    Iter getIter(int docId);
-
-    void forEachValueInDoc(int docId, ValueInDocProc proc);
-
-    static interface ValueInDocProc {
-        void onValue(int docId, double value);
-
-        void onMissing(int docId);
+    /**
+     * Returns the order the values are returned from {@link #nextValue()}.
+     * <p> Note: {@link DoubleValues} have {@link AtomicFieldData.Order#NUMERIC} by default.</p>
+     */
+    public AtomicFieldData.Order getOrder() {
+        return AtomicFieldData.Order.NUMERIC;
     }
 
-    static interface Iter {
+    /**
+     * Ordinal based {@link DoubleValues}.
+     */
+    public static abstract class WithOrdinals extends DoubleValues {
 
-        boolean hasNext();
+        protected final Docs ordinals;
 
-        double next();
-
-        static class Empty implements Iter {
-
-            public static final Empty INSTANCE = new Empty();
-
-            @Override
-            public boolean hasNext() {
-                return false;
-            }
-
-            @Override
-            public double next() {
-                throw new ElasticSearchIllegalStateException();
-            }
+        protected WithOrdinals(Ordinals.Docs ordinals) {
+            super(ordinals.isMultiValued());
+            this.ordinals = ordinals;
         }
 
-        static class Single implements Iter {
+        /**
+         * Returns the associated ordinals instance.
+         * @return the associated ordinals instance.
+         */
+        public Docs ordinals() {
+            return ordinals;
+        }
 
-            public double value;
-            public boolean done;
+        /**
+         * Returns the value for the given ordinal.
+         * @param ord the ordinal to lookup.
+         * @return a double value associated with the given ordinal.
+         */
+        public abstract double getValueByOrd(long ord);
 
-            public Single reset(double value) {
-                this.value = value;
-                this.done = false;
-                return this;
-            }
 
-            @Override
-            public boolean hasNext() {
-                return !done;
-            }
+        @Override
+        public int setDocument(int docId) {
+            this.docId = docId;
+            return ordinals.setDocument(docId);
+        }
 
-            @Override
-            public double next() {
-                assert !done;
-                done = true;
-                return value;
-            }
+        @Override
+        public double nextValue() {
+            return getValueByOrd(ordinals.nextOrd());
         }
     }
+    /**
+     * An empty {@link DoubleValues} implementation
+     */
+    private static class Empty extends DoubleValues {
 
-    static class Empty implements DoubleValues {
-        @Override
-        public boolean isMultiValued() {
-            return false;
+        Empty() {
+            super(false);
         }
 
         @Override
-        public boolean hasValue(int docId) {
-            return false;
+        public int setDocument(int docId) {
+            return 0;
         }
-
+        
         @Override
-        public double getValue(int docId) {
-            throw new ElasticSearchIllegalStateException("Can't retrieve a value from an empty DoubleValues");
-        }
-
-        @Override
-        public double getValueMissing(int docId, double missingValue) {
-            return missingValue;
-        }
-
-        @Override
-        public DoubleArrayRef getValues(int docId) {
-            return DoubleArrayRef.EMPTY;
-        }
-
-        @Override
-        public Iter getIter(int docId) {
-            return Iter.Empty.INSTANCE;
-        }
-
-        @Override
-        public void forEachValueInDoc(int docId, ValueInDocProc proc) {
-            proc.onMissing(docId);
+        public double nextValue() {
+            throw new ElasticSearchIllegalStateException("Empty DoubleValues has no next value");
         }
     }
 
-    public static class LongBased implements DoubleValues {
-
-        private final LongValues values;
-        private final DoubleArrayRef arrayScratch = new DoubleArrayRef(new double[1], 1);
-        private final ValueIter iter = new ValueIter();
-        private final Proc proc = new Proc();
-
-        public LongBased(LongValues values) {
-            this.values = values;
-        }
-
-        @Override
-        public boolean isMultiValued() {
-            return values.isMultiValued();
-        }
-
-        @Override
-        public boolean hasValue(int docId) {
-            return values.hasValue(docId);
-        }
-
-        @Override
-        public double getValue(int docId) {
-            return (double) values.getValue(docId);
-        }
-
-        @Override
-        public double getValueMissing(int docId, double missingValue) {
-            if (!values.hasValue(docId)) {
-                return missingValue;
-            }
-            return getValue(docId);
-        }
-
-        @Override
-        public DoubleArrayRef getValues(int docId) {
-            LongArrayRef arrayRef = values.getValues(docId);
-            int size = arrayRef.size();
-            if (size == 0) {
-                return DoubleArrayRef.EMPTY;
-            }
-            arrayScratch.reset(size);
-            for (int i = arrayRef.start; i < arrayRef.end; i++) {
-                arrayScratch.values[arrayScratch.end++] = (double) arrayRef.values[i];
-            }
-            return arrayScratch;
-        }
-
-        @Override
-        public Iter getIter(int docId) {
-            return this.iter.reset(values.getIter(docId));
-        }
-
-        @Override
-        public void forEachValueInDoc(int docId, ValueInDocProc proc) {
-            values.forEachValueInDoc(docId, this.proc.reset(proc));
-        }
-
-        static class ValueIter implements Iter {
-
-            private LongValues.Iter iter;
-
-            private ValueIter reset(LongValues.Iter iter) {
-                this.iter = iter;
-                return this;
-            }
-
-            @Override
-            public boolean hasNext() {
-                return iter.hasNext();
-            }
-
-            @Override
-            public double next() {
-                return (double) iter.next();
-            }
-        }
-
-        static class Proc implements LongValues.ValueInDocProc {
-
-            private ValueInDocProc proc;
-
-            private Proc reset(ValueInDocProc proc) {
-                this.proc = proc;
-                return this;
-            }
-
-            @Override
-            public void onValue(int docId, long value) {
-                this.proc.onValue(docId, (double) value);
-            }
-
-            @Override
-            public void onMissing(int docId) {
-                this.proc.onMissing(docId);
-            }
-        }
-
-    }
 }

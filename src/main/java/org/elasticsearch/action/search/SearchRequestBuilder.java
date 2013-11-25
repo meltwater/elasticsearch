@@ -32,9 +32,11 @@ import org.elasticsearch.common.xcontent.XContentBuilder;
 import org.elasticsearch.index.query.FilterBuilder;
 import org.elasticsearch.index.query.QueryBuilder;
 import org.elasticsearch.search.Scroll;
+import org.elasticsearch.search.aggregations.AbstractAggregationBuilder;
 import org.elasticsearch.search.builder.SearchSourceBuilder;
-import org.elasticsearch.search.facet.AbstractFacetBuilder;
+import org.elasticsearch.search.facet.FacetBuilder;
 import org.elasticsearch.search.highlight.HighlightBuilder;
+import org.elasticsearch.search.rescore.RescoreBuilder;
 import org.elasticsearch.search.sort.SortBuilder;
 import org.elasticsearch.search.sort.SortOrder;
 import org.elasticsearch.search.suggest.SuggestBuilder;
@@ -369,6 +371,42 @@ public class SearchRequestBuilder extends ActionRequestBuilder<SearchRequest, Se
     }
 
     /**
+     * Indicates whether the response should contain the stored _source for every hit
+     *
+     * @param fetch
+     * @return
+     */
+    public SearchRequestBuilder setFetchSource(boolean fetch) {
+        sourceBuilder().fetchSource(fetch);
+        return this;
+    }
+
+    /**
+     * Indicate that _source should be returned with every hit, with an "include" and/or "exclude" set which can include simple wildcard
+     * elements.
+     *
+     * @param include An optional include (optionally wildcarded) pattern to filter the returned _source
+     * @param exclude An optional exclude (optionally wildcarded) pattern to filter the returned _source
+     */
+    public SearchRequestBuilder setFetchSource(@Nullable String include, @Nullable String exclude) {
+        sourceBuilder().fetchSource(include, exclude);
+        return this;
+    }
+
+    /**
+     * Indicate that _source should be returned with every hit, with an "include" and/or "exclude" set which can include simple wildcard
+     * elements.
+     *
+     * @param includes An optional list of include (optionally wildcarded) pattern to filter the returned _source
+     * @param excludes An optional list of exclude (optionally wildcarded) pattern to filter the returned _source
+     */
+    public SearchRequestBuilder setFetchSource(@Nullable String[] includes, @Nullable String[] excludes) {
+        sourceBuilder().fetchSource(includes, excludes);
+        return this;
+    }
+
+
+    /**
      * Adds a field to load and return (note, it must be stored) as part of the search request.
      * If none are specified, the source of the document will be return.
      */
@@ -484,7 +522,7 @@ public class SearchRequestBuilder extends ActionRequestBuilder<SearchRequest, Se
     /**
      * Adds a facet to the search operation.
      */
-    public SearchRequestBuilder addFacet(AbstractFacetBuilder facet) {
+    public SearchRequestBuilder addFacet(FacetBuilder facet) {
         sourceBuilder().facet(facet);
         return this;
     }
@@ -526,6 +564,54 @@ public class SearchRequestBuilder extends ActionRequestBuilder<SearchRequest, Se
      */
     public SearchRequestBuilder setFacets(Map facets) {
         sourceBuilder().facets(facets);
+        return this;
+    }
+
+    /**
+     * Adds an get to the search operation.
+     */
+    public SearchRequestBuilder addAggregation(AbstractAggregationBuilder aggregation) {
+        sourceBuilder().aggregation(aggregation);
+        return this;
+    }
+
+    /**
+     * Sets a raw (xcontent) binary representation of addAggregation to use.
+     */
+    public SearchRequestBuilder setAggregations(BytesReference aggregations) {
+        sourceBuilder().aggregations(aggregations);
+        return this;
+    }
+
+    /**
+     * Sets a raw (xcontent) binary representation of addAggregation to use.
+     */
+    public SearchRequestBuilder setAggregations(byte[] aggregations) {
+        sourceBuilder().aggregations(aggregations);
+        return this;
+    }
+
+    /**
+     * Sets a raw (xcontent) binary representation of addAggregation to use.
+     */
+    public SearchRequestBuilder setAggregations(byte[] aggregations, int aggregationsOffset, int aggregationsLength) {
+        sourceBuilder().facets(aggregations, aggregationsOffset, aggregationsLength);
+        return this;
+    }
+
+    /**
+     * Sets a raw (xcontent) binary representation of addAggregation to use.
+     */
+    public SearchRequestBuilder setAggregations(XContentBuilder aggregations) {
+        sourceBuilder().aggregations(aggregations);
+        return this;
+    }
+
+    /**
+     * Sets a raw (xcontent) binary representation of addAggregation to use.
+     */
+    public SearchRequestBuilder setAggregations(Map aggregations) {
+        sourceBuilder().aggregations(aggregations);
         return this;
     }
 
@@ -634,6 +720,14 @@ public class SearchRequestBuilder extends ActionRequestBuilder<SearchRequest, Se
         return this;
     }
 
+    /**
+     * Sets a query to be used for highlighting all fields instead of the search query.
+     */
+    public SearchRequestBuilder setHighlighterQuery(QueryBuilder highlightQuery) {
+        highlightBuilder().highlightQuery(highlightQuery);
+        return this;
+    }
+
     public SearchRequestBuilder setHighlighterRequireFieldMatch(boolean requireFieldMatch) {
         highlightBuilder().requireFieldMatch(requireFieldMatch);
         return this;
@@ -648,6 +742,22 @@ public class SearchRequestBuilder extends ActionRequestBuilder<SearchRequest, Se
     }
 
     /**
+     * Sets the size of the fragment to return from the beginning of the field if there are no matches to
+     * highlight and the field doesn't also define noMatchSize.
+     * @param noMatchSize integer to set or null to leave out of request.  default is null.
+     * @return this builder for chaining
+     */
+    public SearchRequestBuilder setHighlighterNoMatchSize(Integer noMatchSize) {
+        highlightBuilder().noMatchSize(noMatchSize);
+        return this;
+    }
+
+    public SearchRequestBuilder setHighlighterOptions(Map<String, Object> options) {
+        highlightBuilder().options(options);
+        return this;
+    }
+
+    /**
      * Delegates to {@link org.elasticsearch.search.suggest.SuggestBuilder#setText(String)}.
      */
     public SearchRequestBuilder setSuggestText(String globalText) {
@@ -656,10 +766,20 @@ public class SearchRequestBuilder extends ActionRequestBuilder<SearchRequest, Se
     }
 
     /**
-     * Delegates to {@link org.elasticsearch.search.suggest.SuggestBuilder#addSuggestion(org.elasticsearch.search.suggest.SuggestBuilder.Suggestion)}.
+     * Delegates to {@link org.elasticsearch.search.suggest.SuggestBuilder#addSuggestion(org.elasticsearch.search.suggest.SuggestBuilder.SuggestionBuilder)}.
      */
-    public SearchRequestBuilder addSuggestion(SuggestBuilder.Suggestion suggestion) {
+    public SearchRequestBuilder addSuggestion(SuggestBuilder.SuggestionBuilder<?> suggestion) {
         suggestBuilder().addSuggestion(suggestion);
+        return this;
+    }
+
+    public SearchRequestBuilder setRescorer(RescoreBuilder.Rescorer rescorer) {
+        rescoreBuilder().rescorer(rescorer);
+        return this;
+    }
+
+    public SearchRequestBuilder setRescoreWindow(int window) {
+        rescoreBuilder().windowSize(window);
         return this;
     }
 
@@ -838,6 +958,10 @@ public class SearchRequestBuilder extends ActionRequestBuilder<SearchRequest, Se
 
     private SuggestBuilder suggestBuilder() {
         return sourceBuilder().suggest();
+    }
+
+    private RescoreBuilder rescoreBuilder() {
+        return sourceBuilder().rescore();
     }
 
 }

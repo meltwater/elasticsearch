@@ -20,44 +20,41 @@
 package org.elasticsearch.action.admin.indices.open;
 
 import org.elasticsearch.action.ActionListener;
-import org.elasticsearch.action.support.master.MasterNodeOperationRequestBuilder;
+import org.elasticsearch.action.support.IgnoreIndices;
+import org.elasticsearch.action.support.master.AcknowledgedRequestBuilder;
 import org.elasticsearch.client.IndicesAdminClient;
 import org.elasticsearch.client.internal.InternalIndicesAdminClient;
-import org.elasticsearch.common.unit.TimeValue;
 
 /**
- *
+ * Builder for for open index request
  */
-public class OpenIndexRequestBuilder extends MasterNodeOperationRequestBuilder<OpenIndexRequest, OpenIndexResponse, OpenIndexRequestBuilder> {
+public class OpenIndexRequestBuilder extends AcknowledgedRequestBuilder<OpenIndexRequest, OpenIndexResponse, OpenIndexRequestBuilder> {
 
     public OpenIndexRequestBuilder(IndicesAdminClient indicesClient) {
         super((InternalIndicesAdminClient) indicesClient, new OpenIndexRequest());
     }
 
-    public OpenIndexRequestBuilder(IndicesAdminClient indicesClient, String index) {
-        super((InternalIndicesAdminClient) indicesClient, new OpenIndexRequest(index));
+    public OpenIndexRequestBuilder(IndicesAdminClient indicesClient, String... indices) {
+        super((InternalIndicesAdminClient) indicesClient, new OpenIndexRequest(indices));
     }
 
-    public OpenIndexRequestBuilder setIndex(String index) {
-        request.index(index);
+    /**
+     * Sets the indices to be opened
+     * @param indices the indices to be opened
+     * @return the request itself
+     */
+    public OpenIndexRequestBuilder setIndices(String... indices) {
+        request.indices(indices);
         return this;
     }
 
     /**
-     * Timeout to wait for the operation to be acknowledged by current cluster nodes. Defaults
-     * to <tt>10s</tt>.
+     * Specifies what type of requested indices to ignore. For example indices that don't exist.
+     * @param ignoreIndices the desired behaviour regarding indices to ignore
+     * @return the request itself
      */
-    public OpenIndexRequestBuilder setTimeout(TimeValue timeout) {
-        request.timeout(timeout);
-        return this;
-    }
-
-    /**
-     * Timeout to wait for the index deletion to be acknowledged by current cluster nodes. Defaults
-     * to <tt>10s</tt>.
-     */
-    public OpenIndexRequestBuilder setTimeout(String timeout) {
-        request.timeout(timeout);
+    public OpenIndexRequestBuilder setIgnoreIndices(IgnoreIndices ignoreIndices) {
+        request.ignoreIndices(ignoreIndices);
         return this;
     }
 

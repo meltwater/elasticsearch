@@ -22,15 +22,18 @@ package org.elasticsearch.rest.action.admin.cluster.node.stats;
 import org.elasticsearch.action.ActionListener;
 import org.elasticsearch.action.admin.cluster.node.stats.NodesStatsRequest;
 import org.elasticsearch.action.admin.cluster.node.stats.NodesStatsResponse;
+import org.elasticsearch.action.admin.indices.stats.CommonStatsFlags;
+import org.elasticsearch.action.admin.indices.stats.CommonStatsFlags.Flag;
 import org.elasticsearch.client.Client;
+import org.elasticsearch.common.Strings;
 import org.elasticsearch.common.inject.Inject;
 import org.elasticsearch.common.settings.Settings;
 import org.elasticsearch.common.xcontent.XContentBuilder;
 import org.elasticsearch.rest.*;
-import org.elasticsearch.rest.action.support.RestActions;
 import org.elasticsearch.rest.action.support.RestXContentBuilder;
 
 import java.io.IOException;
+
 
 /**
  *
@@ -46,11 +49,25 @@ public class RestNodesStatsAction extends BaseRestHandler {
         controller.registerHandler(RestRequest.Method.GET, "/_nodes/stats", this);
         controller.registerHandler(RestRequest.Method.GET, "/_nodes/{nodeId}/stats", this);
 
-        RestIndicesHandler indicesHandler = new RestIndicesHandler();
+        RestIndicesHandler indicesHandler = new RestIndicesHandler(new CommonStatsFlags().all());
         controller.registerHandler(RestRequest.Method.GET, "/_nodes/stats/indices", indicesHandler);
         controller.registerHandler(RestRequest.Method.GET, "/_nodes/{nodeId}/stats/indices", indicesHandler);
         controller.registerHandler(RestRequest.Method.GET, "/_nodes/indices/stats", indicesHandler);
         controller.registerHandler(RestRequest.Method.GET, "/_nodes/{nodeId}/indices/stats", indicesHandler);
+        for (Flag flag : CommonStatsFlags.Flag.values()) {
+            indicesHandler = new RestIndicesHandler(new CommonStatsFlags().clear().set(flag, true));
+            controller.registerHandler(RestRequest.Method.GET, "/_nodes/stats/indices/" + flag.getRestName(), indicesHandler);
+            controller.registerHandler(RestRequest.Method.GET, "/_nodes/{nodeId}/stats/indices/" + flag.getRestName(), indicesHandler);
+            controller.registerHandler(RestRequest.Method.GET, "/_nodes/indices/" + flag.getRestName() + "/stats", indicesHandler);
+            controller.registerHandler(RestRequest.Method.GET, "/_nodes/{nodeId}/indices/" + flag.getRestName() + "/stats", indicesHandler);
+            if (flag == Flag.FieldData || flag == Flag.Completion) {
+                // add field specific endpoints
+                controller.registerHandler(RestRequest.Method.GET, "/_nodes/stats/indices/" + flag.getRestName() + "/{fields}", indicesHandler);
+                controller.registerHandler(RestRequest.Method.GET, "/_nodes/{nodeId}/stats/indices/" + flag.getRestName() + "/{fields}", indicesHandler);
+                controller.registerHandler(RestRequest.Method.GET, "/_nodes/indices/" + flag.getRestName() + "/{fields}/stats", indicesHandler);
+                controller.registerHandler(RestRequest.Method.GET, "/_nodes/{nodeId}/indices/" + flag.getRestName() + "/{fields}/stats", indicesHandler);
+            }
+        }
 
         RestOsHandler osHandler = new RestOsHandler();
         controller.registerHandler(RestRequest.Method.GET, "/_nodes/stats/os", osHandler);
@@ -103,7 +120,7 @@ public class RestNodesStatsAction extends BaseRestHandler {
 
     @Override
     public void handleRequest(final RestRequest request, final RestChannel channel) {
-        String[] nodesIds = RestActions.splitNodes(request.param("nodeId"));
+        String[] nodesIds = Strings.splitStringByCommaToArray(request.param("nodeId"));
         NodesStatsRequest nodesStatsRequest = new NodesStatsRequest(nodesIds);
         boolean clear = request.paramAsBoolean("clear", false);
         if (clear) {
@@ -113,7 +130,9 @@ public class RestNodesStatsAction extends BaseRestHandler {
         if (all) {
             nodesStatsRequest.all();
         }
-        nodesStatsRequest.indices(request.paramAsBoolean("indices", nodesStatsRequest.indices()));
+        if (request.hasParam("indices")) {
+            nodesStatsRequest.indices(request.paramAsBoolean("indices", false));
+        }
         nodesStatsRequest.os(request.paramAsBoolean("os", nodesStatsRequest.os()));
         nodesStatsRequest.process(request.paramAsBoolean("process", nodesStatsRequest.process()));
         nodesStatsRequest.jvm(request.paramAsBoolean("jvm", nodesStatsRequest.jvm()));
@@ -136,7 +155,7 @@ public class RestNodesStatsAction extends BaseRestHandler {
                     response.toXContent(builder, request);
                     builder.endObject();
                     channel.sendResponse(new XContentRestResponse(request, RestStatus.OK, builder));
-                } catch (Exception e) {
+                } catch (Throwable e) {
                     onFailure(e);
                 }
             }
@@ -153,10 +172,23 @@ public class RestNodesStatsAction extends BaseRestHandler {
     }
 
     class RestIndicesHandler implements RestHandler {
+
+        private final CommonStatsFlags flags;
+
+        RestIndicesHandler(CommonStatsFlags flags) {
+            this.flags = flags;
+        }
+
         @Override
         public void handleRequest(final RestRequest request, final RestChannel channel) {
-            NodesStatsRequest nodesStatsRequest = new NodesStatsRequest(RestActions.splitNodes(request.param("nodeId")));
-            nodesStatsRequest.clear().indices(true);
+            NodesStatsRequest nodesStatsRequest = new NodesStatsRequest(Strings.splitStringByCommaToArray(request.param("nodeId")));
+            CommonStatsFlags flags = this.flags;
+            if (flags.isSet(Flag.FieldData) && (request.hasParam("fields") || request.hasParam("fielddata_fields"))) {
+                flags = flags.clone().fieldDataFields(request.paramAsStringArray("fielddata_fields", request.paramAsStringArray("fields", null)));
+            } else if (flags.isSet(Flag.Completion) && (request.hasParam("fields") || request.hasParam("completion_fields"))) {
+                flags = flags.clone().completionDataFields(request.paramAsStringArray("completion_fields", request.paramAsStringArray("fields", null)));
+            }
+            nodesStatsRequest.clear().indices(flags);
             executeNodeStats(request, channel, nodesStatsRequest);
         }
     }
@@ -164,7 +196,7 @@ public class RestNodesStatsAction extends BaseRestHandler {
     class RestOsHandler implements RestHandler {
         @Override
         public void handleRequest(final RestRequest request, final RestChannel channel) {
-            NodesStatsRequest nodesStatsRequest = new NodesStatsRequest(RestActions.splitNodes(request.param("nodeId")));
+            NodesStatsRequest nodesStatsRequest = new NodesStatsRequest(Strings.splitStringByCommaToArray(request.param("nodeId")));
             nodesStatsRequest.clear().os(true);
             executeNodeStats(request, channel, nodesStatsRequest);
         }
@@ -173,7 +205,7 @@ public class RestNodesStatsAction extends BaseRestHandler {
     class RestProcessHandler implements RestHandler {
         @Override
         public void handleRequest(final RestRequest request, final RestChannel channel) {
-            NodesStatsRequest nodesStatsRequest = new NodesStatsRequest(RestActions.splitNodes(request.param("nodeId")));
+            NodesStatsRequest nodesStatsRequest = new NodesStatsRequest(Strings.splitStringByCommaToArray(request.param("nodeId")));
             nodesStatsRequest.clear().process(true);
             executeNodeStats(request, channel, nodesStatsRequest);
         }
@@ -182,7 +214,7 @@ public class RestNodesStatsAction extends BaseRestHandler {
     class RestJvmHandler implements RestHandler {
         @Override
         public void handleRequest(final RestRequest request, final RestChannel channel) {
-            NodesStatsRequest nodesStatsRequest = new NodesStatsRequest(RestActions.splitNodes(request.param("nodeId")));
+            NodesStatsRequest nodesStatsRequest = new NodesStatsRequest(Strings.splitStringByCommaToArray(request.param("nodeId")));
             nodesStatsRequest.clear().jvm(true);
             executeNodeStats(request, channel, nodesStatsRequest);
         }
@@ -191,7 +223,7 @@ public class RestNodesStatsAction extends BaseRestHandler {
     class RestThreadPoolHandler implements RestHandler {
         @Override
         public void handleRequest(final RestRequest request, final RestChannel channel) {
-            NodesStatsRequest nodesStatsRequest = new NodesStatsRequest(RestActions.splitNodes(request.param("nodeId")));
+            NodesStatsRequest nodesStatsRequest = new NodesStatsRequest(Strings.splitStringByCommaToArray(request.param("nodeId")));
             nodesStatsRequest.clear().threadPool(true);
             executeNodeStats(request, channel, nodesStatsRequest);
         }
@@ -200,7 +232,7 @@ public class RestNodesStatsAction extends BaseRestHandler {
     class RestNetworkHandler implements RestHandler {
         @Override
         public void handleRequest(final RestRequest request, final RestChannel channel) {
-            NodesStatsRequest nodesStatsRequest = new NodesStatsRequest(RestActions.splitNodes(request.param("nodeId")));
+            NodesStatsRequest nodesStatsRequest = new NodesStatsRequest(Strings.splitStringByCommaToArray(request.param("nodeId")));
             nodesStatsRequest.clear().network(true);
             executeNodeStats(request, channel, nodesStatsRequest);
         }
@@ -209,7 +241,7 @@ public class RestNodesStatsAction extends BaseRestHandler {
     class RestFsHandler implements RestHandler {
         @Override
         public void handleRequest(final RestRequest request, final RestChannel channel) {
-            NodesStatsRequest nodesStatsRequest = new NodesStatsRequest(RestActions.splitNodes(request.param("nodeId")));
+            NodesStatsRequest nodesStatsRequest = new NodesStatsRequest(Strings.splitStringByCommaToArray(request.param("nodeId")));
             nodesStatsRequest.clear().fs(true);
             executeNodeStats(request, channel, nodesStatsRequest);
         }
@@ -218,7 +250,7 @@ public class RestNodesStatsAction extends BaseRestHandler {
     class RestTransportHandler implements RestHandler {
         @Override
         public void handleRequest(final RestRequest request, final RestChannel channel) {
-            NodesStatsRequest nodesStatsRequest = new NodesStatsRequest(RestActions.splitNodes(request.param("nodeId")));
+            NodesStatsRequest nodesStatsRequest = new NodesStatsRequest(Strings.splitStringByCommaToArray(request.param("nodeId")));
             nodesStatsRequest.clear().transport(true);
             executeNodeStats(request, channel, nodesStatsRequest);
         }
@@ -227,7 +259,7 @@ public class RestNodesStatsAction extends BaseRestHandler {
     class RestHttpHandler implements RestHandler {
         @Override
         public void handleRequest(final RestRequest request, final RestChannel channel) {
-            NodesStatsRequest nodesStatsRequest = new NodesStatsRequest(RestActions.splitNodes(request.param("nodeId")));
+            NodesStatsRequest nodesStatsRequest = new NodesStatsRequest(Strings.splitStringByCommaToArray(request.param("nodeId")));
             nodesStatsRequest.clear().http(true);
             executeNodeStats(request, channel, nodesStatsRequest);
         }

@@ -22,6 +22,9 @@ package org.elasticsearch.index.mapper.internal;
 import org.apache.lucene.document.Field;
 import org.apache.lucene.document.FieldType;
 import org.apache.lucene.index.FieldInfo.IndexOptions;
+import org.apache.lucene.index.Term;
+import org.apache.lucene.queries.TermFilter;
+import org.apache.lucene.queries.TermsFilter;
 import org.apache.lucene.search.ConstantScoreQuery;
 import org.apache.lucene.search.Filter;
 import org.apache.lucene.search.Query;
@@ -30,7 +33,7 @@ import org.elasticsearch.common.Nullable;
 import org.elasticsearch.common.Strings;
 import org.elasticsearch.common.lucene.BytesRefs;
 import org.elasticsearch.common.lucene.Lucene;
-import org.elasticsearch.common.lucene.search.XTermsFilter;
+import org.elasticsearch.common.lucene.search.Queries;
 import org.elasticsearch.common.settings.Settings;
 import org.elasticsearch.common.xcontent.XContentBuilder;
 import org.elasticsearch.index.codec.postingsformat.PostingsFormatProvider;
@@ -95,7 +98,7 @@ public class ParentFieldMapper extends AbstractFieldMapper<Uid> implements Inter
             if (type == null) {
                 throw new MapperParsingException("Parent mapping must contain the parent type");
             }
-            return new ParentFieldMapper(name, indexName, type, postingsFormat, null);
+            return new ParentFieldMapper(name, indexName, type, postingsFormat, null, context.indexSettings());
         }
     }
 
@@ -120,11 +123,18 @@ public class ParentFieldMapper extends AbstractFieldMapper<Uid> implements Inter
     private final String type;
     private final BytesRef typeAsBytes;
 
-    protected ParentFieldMapper(String name, String indexName, String type, PostingsFormatProvider postingsFormat, @Nullable Settings fieldDataSettings) {
+    protected ParentFieldMapper(String name, String indexName, String type, PostingsFormatProvider postingsFormat, @Nullable Settings fieldDataSettings, Settings indexSettings) {
         super(new Names(name, indexName, indexName, name), Defaults.BOOST, new FieldType(Defaults.FIELD_TYPE),
-                Lucene.KEYWORD_ANALYZER, Lucene.KEYWORD_ANALYZER, postingsFormat, null, fieldDataSettings);
+                Lucene.KEYWORD_ANALYZER, Lucene.KEYWORD_ANALYZER, postingsFormat, null, null, fieldDataSettings, indexSettings);
         this.type = type;
         this.typeAsBytes = new BytesRef(type);
+    }
+
+    public ParentFieldMapper() {
+        super(new Names(Defaults.NAME, Defaults.NAME, Defaults.NAME, Defaults.NAME), Defaults.BOOST, new FieldType(Defaults.FIELD_TYPE),
+                Lucene.KEYWORD_ANALYZER, Lucene.KEYWORD_ANALYZER, null, null, null, null, null);
+        type = null;
+        typeAsBytes = null;
     }
 
     public String type() {
@@ -139,6 +149,11 @@ public class ParentFieldMapper extends AbstractFieldMapper<Uid> implements Inter
     @Override
     public FieldDataType defaultFieldDataType() {
         return new FieldDataType("string");
+    }
+
+    @Override
+    public boolean hasDocValues() {
+        return false;
     }
 
     @Override
@@ -160,29 +175,33 @@ public class ParentFieldMapper extends AbstractFieldMapper<Uid> implements Inter
     }
 
     @Override
-    protected Field parseCreateField(ParseContext context) throws IOException {
+    protected void parseCreateField(ParseContext context, List<Field> fields) throws IOException {
+        if (!active()) {
+            return;
+        }
+
         if (context.parser().currentName() != null && context.parser().currentName().equals(Defaults.NAME)) {
             // we are in the parsing of _parent phase
             String parentId = context.parser().text();
             context.sourceToParse().parent(parentId);
-            return new Field(names.indexName(), Uid.createUid(context.stringBuilder(), type, parentId), fieldType);
-        }
-        // otherwise, we are running it post processing of the xcontent
-        String parsedParentId = context.doc().get(Defaults.NAME);
-        if (context.sourceToParse().parent() != null) {
-            String parentId = context.sourceToParse().parent();
-            if (parsedParentId == null) {
-                if (parentId == null) {
-                    throw new MapperParsingException("No parent id provided, not within the document, and not externally");
+            fields.add(new Field(names.indexName(), Uid.createUid(context.stringBuilder(), type, parentId), fieldType));
+        } else {
+            // otherwise, we are running it post processing of the xcontent
+            String parsedParentId = context.doc().get(Defaults.NAME);
+            if (context.sourceToParse().parent() != null) {
+                String parentId = context.sourceToParse().parent();
+                if (parsedParentId == null) {
+                    if (parentId == null) {
+                        throw new MapperParsingException("No parent id provided, not within the document, and not externally");
+                    }
+                    // we did not add it in the parsing phase, add it now
+                    fields.add(new Field(names.indexName(), Uid.createUid(context.stringBuilder(), type, parentId), fieldType));
+                } else if (parentId != null && !parsedParentId.equals(Uid.createUid(context.stringBuilder(), type, parentId))) {
+                    throw new MapperParsingException("Parent id mismatch, document value is [" + Uid.createUid(parsedParentId).id() + "], while external value is [" + parentId + "]");
                 }
-                // we did not add it in the parsing phase, add it now
-                return new Field(names.indexName(), Uid.createUid(context.stringBuilder(), type, parentId), fieldType);
-            } else if (parentId != null && !parsedParentId.equals(Uid.createUid(context.stringBuilder(), type, parentId))) {
-                throw new MapperParsingException("Parent id mismatch, document value is [" + Uid.createUid(parsedParentId).id() + "], while external value is [" + parentId + "]");
             }
         }
         // we have parent mapping, yet no value was set, ignore it...
-        return null;
     }
 
     @Override
@@ -239,29 +258,61 @@ public class ParentFieldMapper extends AbstractFieldMapper<Uid> implements Inter
             return super.termFilter(value, context);
         }
         BytesRef bValue = BytesRefs.toBytesRef(value);
-        // we use all types, cause we don't know if its exact or not...
-        BytesRef[] typesValues = new BytesRef[context.mapperService().types().size()];
-        int i = 0;
-        for (String type : context.mapperService().types()) {
-            typesValues[i++] = Uid.createUidAsBytes(type, bValue);
+        if (Uid.hasDelimiter(bValue)) {
+            return new TermFilter(new Term(names.indexName(), bValue));
         }
-        return new XTermsFilter(names.indexName(), typesValues);
+
+        List<String> types = new ArrayList<String>(context.mapperService().types().size());
+        for (DocumentMapper documentMapper : context.mapperService()) {
+            if (!documentMapper.parentFieldMapper().active()) {
+                types.add(documentMapper.type());
+            }
+        }
+
+        if (types.isEmpty()) {
+            return Queries.MATCH_NO_FILTER;
+        } else if (types.size() == 1) {
+            return new TermFilter(new Term(names.indexName(), Uid.createUidAsBytes(types.get(0), bValue)));
+        } else {
+            // we use all non child types, cause we don't know if its exact or not...
+            List<BytesRef> typesValues = new ArrayList<BytesRef>(types.size());
+            for (String type : context.mapperService().types()) {
+                typesValues.add(Uid.createUidAsBytes(type, bValue));
+            }
+            return new TermsFilter(names.indexName(), typesValues);
+        }
     }
 
     @Override
-    public Filter termsFilter(List<Object> values, @Nullable QueryParseContext context) {
+    public Filter termsFilter(List values, @Nullable QueryParseContext context) {
         if (context == null) {
-            return super.termFilter(values, context);
+            return super.termsFilter(values, context);
         }
+        // This will not be invoked if values is empty, so don't check for empty
+        if (values.size() == 1) {
+            return termFilter(values.get(0), context);
+        }
+
+        List<String> types = new ArrayList<String>(context.mapperService().types().size());
+        for (DocumentMapper documentMapper : context.mapperService()) {
+            if (!documentMapper.parentFieldMapper().active()) {
+                types.add(documentMapper.type());
+            }
+        }
+
         List<BytesRef> bValues = new ArrayList<BytesRef>(values.size());
         for (Object value : values) {
             BytesRef bValue = BytesRefs.toBytesRef(value);
-            // we use all types, cause we don't know if its exact or not...
-            for (String type : context.mapperService().types()) {
-                bValues.add(Uid.createUidAsBytes(type, bValue));
+            if (Uid.hasDelimiter(bValue)) {
+                bValues.add(bValue);
+            } else {
+                // we use all non child types, cause we don't know if its exact or not...
+                for (String type : types) {
+                    bValues.add(Uid.createUidAsBytes(type, bValue));
+                }
             }
         }
-        return new XTermsFilter(names.indexName(), bValues);
+        return new TermsFilter(names.indexName(), bValues);
     }
 
     /**
@@ -279,6 +330,10 @@ public class ParentFieldMapper extends AbstractFieldMapper<Uid> implements Inter
 
     @Override
     public XContentBuilder toXContent(XContentBuilder builder, Params params) throws IOException {
+        if (!active()) {
+            return builder;
+        }
+
         builder.startObject(CONTENT_TYPE);
         builder.field("type", type);
         builder.endObject();
@@ -287,6 +342,21 @@ public class ParentFieldMapper extends AbstractFieldMapper<Uid> implements Inter
 
     @Override
     public void merge(Mapper mergeWith, MergeContext mergeContext) throws MergeMappingException {
-        // do nothing here, no merging, but also no exception
+        ParentFieldMapper other = (ParentFieldMapper) mergeWith;
+        if (active() == other.active()) {
+            return;
+        }
+
+        if (active() != other.active() || !type.equals(other.type)) {
+            mergeContext.addConflict("The _parent field can't be added or updated");
+        }
     }
+
+    /**
+     * @return Whether the _parent field is actually used.
+     */
+    public boolean active() {
+        return type != null;
+    }
+
 }

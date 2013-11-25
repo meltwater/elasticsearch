@@ -29,19 +29,28 @@ import org.apache.lucene.analysis.CustomAnalyzerWrapper;
 public class NamedAnalyzer extends CustomAnalyzerWrapper {
 
     private final String name;
-
     private final AnalyzerScope scope;
-
     private final Analyzer analyzer;
+    private final int positionOffsetGap;
+
+    public NamedAnalyzer(NamedAnalyzer analyzer, int positionOffsetGap) {
+        this(analyzer.name(), analyzer.scope(), analyzer.analyzer(), positionOffsetGap);
+    }
 
     public NamedAnalyzer(String name, Analyzer analyzer) {
         this(name, AnalyzerScope.INDEX, analyzer);
     }
 
     public NamedAnalyzer(String name, AnalyzerScope scope, Analyzer analyzer) {
+        this(name, scope, analyzer, Integer.MIN_VALUE);
+    }
+
+    public NamedAnalyzer(String name, AnalyzerScope scope, Analyzer analyzer, int positionOffsetGap) {
+        super(analyzer.getReuseStrategy());
         this.name = name;
         this.scope = scope;
         this.analyzer = analyzer;
+        this.positionOffsetGap = positionOffsetGap;
     }
 
     /**
@@ -73,6 +82,14 @@ public class NamedAnalyzer extends CustomAnalyzerWrapper {
     @Override
     protected TokenStreamComponents wrapComponents(String fieldName, TokenStreamComponents components) {
         return components;
+    }
+
+    @Override
+    public int getPositionIncrementGap(String fieldName) {
+        if (positionOffsetGap != Integer.MIN_VALUE) {
+            return positionOffsetGap;
+        }
+        return super.getPositionIncrementGap(fieldName);
     }
 
     @Override

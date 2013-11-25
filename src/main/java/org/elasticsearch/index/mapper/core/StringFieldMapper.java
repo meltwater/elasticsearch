@@ -25,8 +25,10 @@ import org.apache.lucene.analysis.tokenattributes.CharTermAttribute;
 import org.apache.lucene.analysis.tokenattributes.OffsetAttribute;
 import org.apache.lucene.document.Field;
 import org.apache.lucene.document.FieldType;
+import org.apache.lucene.document.SortedSetDocValuesField;
 import org.apache.lucene.index.FieldInfo.IndexOptions;
 import org.apache.lucene.search.Filter;
+import org.apache.lucene.util.BytesRef;
 import org.elasticsearch.ElasticSearchIllegalArgumentException;
 import org.elasticsearch.common.Nullable;
 import org.elasticsearch.common.Strings;
@@ -35,7 +37,7 @@ import org.elasticsearch.common.xcontent.XContentBuilder;
 import org.elasticsearch.common.xcontent.XContentParser;
 import org.elasticsearch.common.xcontent.support.XContentMapValues;
 import org.elasticsearch.index.analysis.NamedAnalyzer;
-import org.elasticsearch.index.analysis.NamedCustomAnalyzer;
+import org.elasticsearch.index.codec.docvaluesformat.DocValuesFormatProvider;
 import org.elasticsearch.index.codec.postingsformat.PostingsFormatProvider;
 import org.elasticsearch.index.fielddata.FieldDataType;
 import org.elasticsearch.index.mapper.*;
@@ -43,6 +45,7 @@ import org.elasticsearch.index.mapper.internal.AllFieldMapper;
 import org.elasticsearch.index.similarity.SimilarityProvider;
 
 import java.io.IOException;
+import java.util.List;
 import java.util.Map;
 
 import static org.elasticsearch.index.mapper.MapperBuilders.stringField;
@@ -68,7 +71,7 @@ public class StringFieldMapper extends AbstractFieldMapper<String> implements Al
         public static final int IGNORE_ABOVE = -1;
     }
 
-    public static class Builder extends AbstractFieldMapper.OpenBuilder<Builder, StringFieldMapper> {
+    public static class Builder extends AbstractFieldMapper.Builder<Builder, StringFieldMapper> {
 
         protected String nullValue = Defaults.NULL_VALUE;
 
@@ -85,12 +88,6 @@ public class StringFieldMapper extends AbstractFieldMapper<String> implements Al
 
         public Builder nullValue(String nullValue) {
             this.nullValue = nullValue;
-            return this;
-        }
-
-        @Override
-        public Builder includeInAll(Boolean includeInAll) {
-            this.includeInAll = includeInAll;
             return this;
         }
 
@@ -121,9 +118,9 @@ public class StringFieldMapper extends AbstractFieldMapper<String> implements Al
         @Override
         public StringFieldMapper build(BuilderContext context) {
             if (positionOffsetGap > 0) {
-                indexAnalyzer = new NamedCustomAnalyzer(indexAnalyzer, positionOffsetGap);
-                searchAnalyzer = new NamedCustomAnalyzer(searchAnalyzer, positionOffsetGap);
-                searchQuotedAnalyzer = new NamedCustomAnalyzer(searchQuotedAnalyzer, positionOffsetGap);
+                indexAnalyzer = new NamedAnalyzer(indexAnalyzer, positionOffsetGap);
+                searchAnalyzer = new NamedAnalyzer(searchAnalyzer, positionOffsetGap);
+                searchQuotedAnalyzer = new NamedAnalyzer(searchQuotedAnalyzer, positionOffsetGap);
             }
             // if the field is not analyzed, then by default, we should omit norms and have docs only
             // index options, as probably what the user really wants
@@ -138,7 +135,7 @@ public class StringFieldMapper extends AbstractFieldMapper<String> implements Al
             }
             StringFieldMapper fieldMapper = new StringFieldMapper(buildNames(context),
                     boost, fieldType, nullValue, indexAnalyzer, searchAnalyzer, searchQuotedAnalyzer,
-                    positionOffsetGap, ignoreAbove, provider, similarity, fieldDataSettings);
+                    positionOffsetGap, ignoreAbove, postingsProvider, docValuesProvider, similarity, fieldDataSettings, context.indexSettings());
             fieldMapper.includeInAll(includeInAll);
             return fieldMapper;
         }
@@ -194,8 +191,12 @@ public class StringFieldMapper extends AbstractFieldMapper<String> implements Al
     protected StringFieldMapper(Names names, float boost, FieldType fieldType,
                                 String nullValue, NamedAnalyzer indexAnalyzer, NamedAnalyzer searchAnalyzer,
                                 NamedAnalyzer searchQuotedAnalyzer, int positionOffsetGap, int ignoreAbove,
-                                PostingsFormatProvider postingsFormat, SimilarityProvider similarity, @Nullable Settings fieldDataSettings) {
-        super(names, boost, fieldType, indexAnalyzer, searchAnalyzer, postingsFormat, similarity, fieldDataSettings);
+                                PostingsFormatProvider postingsFormat, DocValuesFormatProvider docValuesFormat,
+                                SimilarityProvider similarity, @Nullable Settings fieldDataSettings, Settings indexSettings) {
+        super(names, boost, fieldType, indexAnalyzer, searchAnalyzer, postingsFormat, docValuesFormat, similarity, fieldDataSettings, indexSettings);
+        if (fieldType.tokenized() && fieldType.indexed() && hasDocValues()) {
+            throw new MapperParsingException("Field [" + names.fullName() + "] cannot be analyzed and have doc values");
+        }
         this.nullValue = nullValue;
         this.positionOffsetGap = positionOffsetGap;
         this.searchQuotedAnalyzer = searchQuotedAnalyzer != null ? searchQuotedAnalyzer : this.searchAnalyzer;
@@ -257,7 +258,7 @@ public class StringFieldMapper extends AbstractFieldMapper<String> implements Al
     }
 
     @Override
-    protected Field parseCreateField(ParseContext context) throws IOException {
+    protected void parseCreateField(ParseContext context, List<Field> fields) throws IOException {
         String value = nullValue;
         float boost = this.boost;
         if (context.externalValueSet()) {
@@ -287,21 +288,26 @@ public class StringFieldMapper extends AbstractFieldMapper<String> implements Al
             }
         }
         if (value == null) {
-            return null;
+            return;
         }
         if (ignoreAbove > 0 && value.length() > ignoreAbove) {
-            return null;
+            return;
         }
         if (context.includeInAll(includeInAll, this)) {
             context.allEntries().addText(names.fullName(), value, boost);
         }
-        if (!fieldType().indexed() && !fieldType().stored()) {
-            context.ignoredValue(names.indexName(), value);
-            return null;
+
+        if (fieldType.indexed() || fieldType.stored()) {
+            Field field = new StringField(names.indexName(), value, fieldType);
+            field.setBoost(boost);
+            fields.add(field);
         }
-        Field field = new StringField(names.indexName(), value, fieldType);
-        field.setBoost(boost);
-        return field;
+        if (hasDocValues()) {
+            fields.add(new SortedSetDocValuesField(names.indexName(), new BytesRef(value)));
+        }
+        if (fields.isEmpty()) {
+            context.ignoredValue(names.indexName(), value);
+        }
     }
 
     @Override
@@ -323,32 +329,41 @@ public class StringFieldMapper extends AbstractFieldMapper<String> implements Al
     }
 
     @Override
-    protected void doXContentBody(XContentBuilder builder) throws IOException {
-        super.doXContentBody(builder);
-        if (nullValue != null) {
+    protected void doXContentBody(XContentBuilder builder, boolean includeDefaults, Params params) throws IOException {
+        super.doXContentBody(builder, includeDefaults, params);
+
+        if (includeDefaults || nullValue != null) {
             builder.field("null_value", nullValue);
         }
         if (includeInAll != null) {
             builder.field("include_in_all", includeInAll);
+        } else if (includeDefaults) {
+            builder.field("include_in_all", false);
         }
-        if (positionOffsetGap != Defaults.POSITION_OFFSET_GAP) {
+
+        if (includeDefaults || positionOffsetGap != Defaults.POSITION_OFFSET_GAP) {
             builder.field("position_offset_gap", positionOffsetGap);
         }
         if (searchQuotedAnalyzer != null && searchAnalyzer != searchQuotedAnalyzer) {
             builder.field("search_quote_analyzer", searchQuotedAnalyzer.name());
+        } else if (includeDefaults) {
+            if (searchQuotedAnalyzer == null) {
+                builder.field("search_quote_analyzer", "default");
+            } else {
+                builder.field("search_quote_analyzer", searchQuotedAnalyzer.name());
+            }
         }
-        if (ignoreAbove != Defaults.IGNORE_ABOVE) {
+        if (includeDefaults || ignoreAbove != Defaults.IGNORE_ABOVE) {
             builder.field("ignore_above", ignoreAbove);
         }
     }
 
-    /**
-     * Extension of {@link Field} supporting reuse of a cached TokenStream for not-tokenized values.
-     */
+    /** Extension of {@link Field} supporting reuse of a cached TokenStream for not-tokenized values. */
     static class StringField extends Field {
 
         public StringField(String name, String value, FieldType fieldType) {
-            super(name, value, fieldType);
+            super(name, fieldType);
+            fieldsData = value;
         }
 
         @Override
@@ -387,9 +402,7 @@ public class StringFieldMapper extends AbstractFieldMapper<String> implements Al
         StringTokenStream() {
         }
 
-        /**
-         * Sets the string value.
-         */
+        /** Sets the string value. */
         StringTokenStream setValue(String value) {
             this.value = value;
             return this;

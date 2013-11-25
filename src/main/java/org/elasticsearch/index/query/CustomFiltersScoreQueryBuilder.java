@@ -19,16 +19,20 @@
 
 package org.elasticsearch.index.query;
 
+import com.carrotsearch.hppc.FloatArrayList;
 import com.google.common.collect.Maps;
-import gnu.trove.list.array.TFloatArrayList;
 import org.elasticsearch.common.xcontent.XContentBuilder;
+import org.elasticsearch.index.query.functionscore.FunctionScoreQueryBuilder;
 
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Map;
 
 /**
- * A query that uses a filters with a script associated with them to compute the score.
+ * A query that uses a filters with a script associated with them to compute the
+ * score.
+ * 
+ * @deprecated use {@link FunctionScoreQueryBuilder} instead.
  */
 public class CustomFiltersScoreQueryBuilder extends BaseQueryBuilder implements BoostableQueryBuilder<CustomFiltersScoreQueryBuilder> {
 
@@ -46,7 +50,7 @@ public class CustomFiltersScoreQueryBuilder extends BaseQueryBuilder implements 
 
     private ArrayList<FilterBuilder> filters = new ArrayList<FilterBuilder>();
     private ArrayList<String> scripts = new ArrayList<String>();
-    private TFloatArrayList boosts = new TFloatArrayList();
+    private FloatArrayList boosts = new FloatArrayList();
 
     public CustomFiltersScoreQueryBuilder(QueryBuilder queryBuilder) {
         this.queryBuilder = queryBuilder;
@@ -108,8 +112,9 @@ public class CustomFiltersScoreQueryBuilder extends BaseQueryBuilder implements 
     }
 
     /**
-     * Sets the boost for this query.  Documents matching this query will (in addition to the normal
-     * weightings) have their score multiplied by the boost provided.
+     * Sets the boost for this query. Documents matching this query will (in
+     * addition to the normal weightings) have their score multiplied by the
+     * boost provided.
      */
     public CustomFiltersScoreQueryBuilder boost(float boost) {
         this.boost = boost;

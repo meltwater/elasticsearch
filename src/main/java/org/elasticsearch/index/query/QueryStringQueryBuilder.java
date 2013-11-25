@@ -19,12 +19,12 @@
 
 package org.elasticsearch.index.query;
 
-import gnu.trove.impl.Constants;
-import gnu.trove.map.hash.TObjectFloatHashMap;
+import com.carrotsearch.hppc.ObjectFloatOpenHashMap;
 import org.elasticsearch.common.xcontent.XContentBuilder;
 
 import java.io.IOException;
 import java.util.List;
+import java.util.Locale;
 
 import static com.google.common.collect.Lists.newArrayList;
 
@@ -77,7 +77,7 @@ public class QueryStringQueryBuilder extends BaseQueryBuilder implements Boostab
 
     private List<String> fields;
 
-    private TObjectFloatHashMap<String> fieldsBoosts;
+    private ObjectFloatOpenHashMap<String> fieldsBoosts;
 
     private Boolean useDisMax;
 
@@ -88,6 +88,8 @@ public class QueryStringQueryBuilder extends BaseQueryBuilder implements Boostab
     private String minimumShouldMatch;
 
     private Boolean lenient;
+
+    private String queryName;
 
     public QueryStringQueryBuilder(String queryString) {
         this.queryString = queryString;
@@ -122,7 +124,7 @@ public class QueryStringQueryBuilder extends BaseQueryBuilder implements Boostab
         }
         fields.add(field);
         if (fieldsBoosts == null) {
-            fieldsBoosts = new TObjectFloatHashMap<String>(Constants.DEFAULT_CAPACITY, Constants.DEFAULT_LOAD_FACTOR, -1);
+            fieldsBoosts = new ObjectFloatOpenHashMap<String>();
         }
         fieldsBoosts.put(field, boost);
         return this;
@@ -302,6 +304,14 @@ public class QueryStringQueryBuilder extends BaseQueryBuilder implements Boostab
         return this;
     }
 
+    /**
+     * Sets the query name for the filter that can be used when searching for matched_filters per hit.
+     */
+    public QueryStringQueryBuilder queryName(String queryName) {
+        this.queryName = queryName;
+        return this;
+    }
+
     @Override
     protected void doXContent(XContentBuilder builder, Params params) throws IOException {
         builder.startObject(QueryStringQueryParser.NAME);
@@ -312,12 +322,8 @@ public class QueryStringQueryBuilder extends BaseQueryBuilder implements Boostab
         if (fields != null) {
             builder.startArray("fields");
             for (String field : fields) {
-                float boost = -1;
-                if (fieldsBoosts != null) {
-                    boost = fieldsBoosts.get(field);
-                }
-                if (boost != -1) {
-                    field += "^" + boost;
+                if (fieldsBoosts != null && fieldsBoosts.containsKey(field)) {
+                    field += "^" + fieldsBoosts.get(field);
                 }
                 builder.value(field);
             }
@@ -330,7 +336,7 @@ public class QueryStringQueryBuilder extends BaseQueryBuilder implements Boostab
             builder.field("tie_breaker", tieBreaker);
         }
         if (defaultOperator != null) {
-            builder.field("default_operator", defaultOperator.name().toLowerCase());
+            builder.field("default_operator", defaultOperator.name().toLowerCase(Locale.ROOT));
         }
         if (analyzer != null) {
             builder.field("analyzer", analyzer);
@@ -382,6 +388,9 @@ public class QueryStringQueryBuilder extends BaseQueryBuilder implements Boostab
         }
         if (lenient != null) {
             builder.field("lenient", lenient);
+        }
+        if (queryName != null) {
+            builder.field("_name", queryName);
         }
         builder.endObject();
     }

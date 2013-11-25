@@ -19,7 +19,8 @@
 
 package org.elasticsearch.index.fielddata.ordinals;
 
-import org.elasticsearch.index.fielddata.util.IntArrayRef;
+import org.apache.lucene.util.LongsRef;
+import org.elasticsearch.ElasticSearchIllegalStateException;
 
 /**
  */
@@ -37,16 +38,6 @@ public class EmptyOrdinals implements Ordinals {
     }
 
     @Override
-    public boolean hasSingleArrayBackingStorage() {
-        return false;
-    }
-
-    @Override
-    public Object getBackingStorage() {
-        return null;
-    }
-
-    @Override
     public boolean isMultiValued() {
         return false;
     }
@@ -57,8 +48,13 @@ public class EmptyOrdinals implements Ordinals {
     }
 
     @Override
-    public int getNumOrds() {
+    public long getNumOrds() {
         return 0;
+    }
+
+    @Override
+    public long getMaxOrd() {
+        return 1;
     }
 
     @Override
@@ -67,8 +63,8 @@ public class EmptyOrdinals implements Ordinals {
     }
 
     public static class Docs implements Ordinals.Docs {
-
         private final EmptyOrdinals parent;
+        public static final LongsRef EMPTY_LONGS_REF = new LongsRef();
 
         public Docs(EmptyOrdinals parent) {
             this.parent = parent;
@@ -85,8 +81,13 @@ public class EmptyOrdinals implements Ordinals {
         }
 
         @Override
-        public int getNumOrds() {
-            return parent.getNumOrds();
+        public long getNumOrds() {
+            return 0;
+        }
+
+        @Override
+        public long getMaxOrd() {
+            return 1;
         }
 
         @Override
@@ -95,23 +96,28 @@ public class EmptyOrdinals implements Ordinals {
         }
 
         @Override
-        public int getOrd(int docId) {
+        public long getOrd(int docId) {
             return 0;
         }
 
         @Override
-        public IntArrayRef getOrds(int docId) {
-            return IntArrayRef.EMPTY;
+        public LongsRef getOrds(int docId) {
+            return EMPTY_LONGS_REF;
         }
 
         @Override
-        public Iter getIter(int docId) {
-            return EmptyIter.INSTANCE;
+        public long nextOrd() {
+            throw new ElasticSearchIllegalStateException("Empty ordinals has no nextOrd");
         }
 
         @Override
-        public void forEachOrdinalInDoc(int docId, OrdinalInDocProc proc) {
-            proc.onOrdinal(docId, 0);
+        public int setDocument(int docId) {
+            return 0;
+        }
+
+        @Override
+        public long currentOrd() {
+            return 0;
         }
     }
 }

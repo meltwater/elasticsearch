@@ -24,6 +24,8 @@ import org.elasticsearch.cluster.node.DiscoveryNode;
 import org.elasticsearch.common.Nullable;
 import org.elasticsearch.common.io.stream.StreamInput;
 import org.elasticsearch.common.io.stream.StreamOutput;
+import org.elasticsearch.common.xcontent.ToXContent;
+import org.elasticsearch.common.xcontent.XContentBuilder;
 import org.elasticsearch.http.HttpStats;
 import org.elasticsearch.indices.NodeIndicesStats;
 import org.elasticsearch.monitor.fs.FsStats;
@@ -35,11 +37,12 @@ import org.elasticsearch.threadpool.ThreadPoolStats;
 import org.elasticsearch.transport.TransportStats;
 
 import java.io.IOException;
+import java.util.Map;
 
 /**
  * Node statistics (dynamic, changes depending on when created).
  */
-public class NodeStats extends NodeOperationResponse {
+public class NodeStats extends NodeOperationResponse implements ToXContent {
 
     private long timestamp;
 
@@ -93,17 +96,8 @@ public class NodeStats extends NodeOperationResponse {
         this.http = http;
     }
 
-    public long timestamp() {
-        return this.timestamp;
-    }
-
     public long getTimestamp() {
         return this.timestamp;
-    }
-
-    @Nullable
-    public String hostname() {
-        return this.hostname;
     }
 
     @Nullable
@@ -115,24 +109,8 @@ public class NodeStats extends NodeOperationResponse {
      * Indices level stats.
      */
     @Nullable
-    public NodeIndicesStats indices() {
-        return this.indices;
-    }
-
-    /**
-     * Indices level stats.
-     */
-    @Nullable
     public NodeIndicesStats getIndices() {
-        return indices();
-    }
-
-    /**
-     * Operating System level statistics.
-     */
-    @Nullable
-    public OsStats os() {
-        return this.os;
+        return this.indices;
     }
 
     /**
@@ -140,15 +118,7 @@ public class NodeStats extends NodeOperationResponse {
      */
     @Nullable
     public OsStats getOs() {
-        return os();
-    }
-
-    /**
-     * Process level statistics.
-     */
-    @Nullable
-    public ProcessStats process() {
-        return process;
+        return this.os;
     }
 
     /**
@@ -156,15 +126,7 @@ public class NodeStats extends NodeOperationResponse {
      */
     @Nullable
     public ProcessStats getProcess() {
-        return process();
-    }
-
-    /**
-     * JVM level statistics.
-     */
-    @Nullable
-    public JvmStats jvm() {
-        return jvm;
+        return process;
     }
 
     /**
@@ -172,15 +134,7 @@ public class NodeStats extends NodeOperationResponse {
      */
     @Nullable
     public JvmStats getJvm() {
-        return jvm();
-    }
-
-    /**
-     * Thread Pool level statistics.
-     */
-    @Nullable
-    public ThreadPoolStats threadPool() {
-        return this.threadPool;
+        return jvm;
     }
 
     /**
@@ -188,15 +142,7 @@ public class NodeStats extends NodeOperationResponse {
      */
     @Nullable
     public ThreadPoolStats getThreadPool() {
-        return threadPool();
-    }
-
-    /**
-     * Network level statistics.
-     */
-    @Nullable
-    public NetworkStats network() {
-        return network;
+        return this.threadPool;
     }
 
     /**
@@ -204,15 +150,7 @@ public class NodeStats extends NodeOperationResponse {
      */
     @Nullable
     public NetworkStats getNetwork() {
-        return network();
-    }
-
-    /**
-     * File system level stats.
-     */
-    @Nullable
-    public FsStats fs() {
-        return fs;
+        return network;
     }
 
     /**
@@ -220,27 +158,17 @@ public class NodeStats extends NodeOperationResponse {
      */
     @Nullable
     public FsStats getFs() {
-        return fs();
-    }
-
-    @Nullable
-    public TransportStats transport() {
-        return this.transport;
+        return fs;
     }
 
     @Nullable
     public TransportStats getTransport() {
-        return transport();
-    }
-
-    @Nullable
-    public HttpStats http() {
-        return this.http;
+        return this.transport;
     }
 
     @Nullable
     public HttpStats getHttp() {
-        return http();
+        return this.http;
     }
 
     public static NodeStats readNodeStats(StreamInput in) throws IOException {
@@ -349,5 +277,56 @@ public class NodeStats extends NodeOperationResponse {
             out.writeBoolean(true);
             http.writeTo(out);
         }
+    }
+
+    @Override
+    public XContentBuilder toXContent(XContentBuilder builder, Params params) throws IOException {
+        if (!params.param("node_info_format", "default").equals("none")) {
+            builder.field("name", getNode().name(), XContentBuilder.FieldCaseConversion.NONE);
+            builder.field("transport_address", getNode().address().toString(), XContentBuilder.FieldCaseConversion.NONE);
+
+            if (getHostname() != null) {
+                builder.field("hostname", getHostname(), XContentBuilder.FieldCaseConversion.NONE);
+            }
+
+            if (!getNode().attributes().isEmpty()) {
+                builder.startObject("attributes");
+                for (Map.Entry<String, String> attr : getNode().attributes().entrySet()) {
+                    builder.field(attr.getKey(), attr.getValue(), XContentBuilder.FieldCaseConversion.NONE);
+                }
+                builder.endObject();
+            }
+        }
+
+        if (getIndices() != null) {
+            getIndices().toXContent(builder, params);
+        }
+
+        if (getOs() != null) {
+            getOs().toXContent(builder, params);
+        }
+        if (getProcess() != null) {
+            getProcess().toXContent(builder, params);
+        }
+        if (getJvm() != null) {
+            getJvm().toXContent(builder, params);
+        }
+        if (getThreadPool() != null) {
+            getThreadPool().toXContent(builder, params);
+        }
+        if (getNetwork() != null) {
+            getNetwork().toXContent(builder, params);
+        }
+        if (getFs() != null) {
+            getFs().toXContent(builder, params);
+        }
+        if (getTransport() != null) {
+            getTransport().toXContent(builder, params);
+        }
+        if (getHttp() != null) {
+            getHttp().toXContent(builder, params);
+        }
+
+        return builder;
     }
 }

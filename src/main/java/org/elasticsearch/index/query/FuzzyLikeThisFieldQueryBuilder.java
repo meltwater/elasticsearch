@@ -19,6 +19,7 @@
 
 package org.elasticsearch.index.query;
 
+import org.elasticsearch.ElasticSearchIllegalArgumentException;
 import org.elasticsearch.common.xcontent.XContentBuilder;
 
 import java.io.IOException;
@@ -38,6 +39,8 @@ public class FuzzyLikeThisFieldQueryBuilder extends BaseQueryBuilder implements 
     private Integer maxQueryTerms;
     private Boolean ignoreTF;
     private String analyzer;
+    private Boolean failOnUnsupportedField;
+    private String queryName;
 
     /**
      * A fuzzy more like this query on the provided field.
@@ -89,12 +92,28 @@ public class FuzzyLikeThisFieldQueryBuilder extends BaseQueryBuilder implements 
         return this;
     }
 
+    /**
+     * Whether to fail or return no result when this query is run against a field which is not supported such as binary/numeric fields.
+     */
+    public FuzzyLikeThisFieldQueryBuilder failOnUnsupportedField(boolean fail) {
+        failOnUnsupportedField = fail;
+        return this;
+    }
+
+    /**
+     * Sets the query name for the filter that can be used when searching for matched_filters per hit.
+     */
+    public FuzzyLikeThisFieldQueryBuilder queryName(String queryName) {
+        this.queryName = queryName;
+        return this;
+    }
+
     @Override
     protected void doXContent(XContentBuilder builder, Params params) throws IOException {
         builder.startObject(FuzzyLikeThisFieldQueryParser.NAME);
         builder.startObject(name);
         if (likeText == null) {
-            throw new QueryBuilderException("fuzzyLikeThis requires 'likeText' to be provided");
+            throw new ElasticSearchIllegalArgumentException("fuzzyLikeThis requires 'likeText' to be provided");
         }
         builder.field("like_text", likeText);
         if (maxQueryTerms != null) {
@@ -114,6 +133,12 @@ public class FuzzyLikeThisFieldQueryBuilder extends BaseQueryBuilder implements 
         }
         if (analyzer != null) {
             builder.field("analyzer", analyzer);
+        }
+        if (failOnUnsupportedField != null) {
+            builder.field("fail_on_unsupported_field", failOnUnsupportedField);
+        }
+        if (queryName != null) {
+            builder.field("_name", queryName);
         }
         builder.endObject();
         builder.endObject();

@@ -28,6 +28,7 @@ import org.apache.lucene.document.Field;
 import org.apache.lucene.document.FieldType;
 import org.apache.lucene.index.IndexableField;
 import org.apache.lucene.search.Filter;
+import org.apache.lucene.util.CloseableThreadLocal;
 import org.elasticsearch.common.Booleans;
 import org.elasticsearch.common.Nullable;
 import org.elasticsearch.common.Preconditions;
@@ -161,7 +162,10 @@ public class DocumentMapper implements ToXContent {
                     idFieldMapper = new IdFieldMapper(fieldType);
                 }
             }
+            // UID first so it will be the first stored field to load (so will benefit from "fields: []" early termination
+            this.rootMappers.put(UidFieldMapper.class, new UidFieldMapper());
             this.rootMappers.put(IdFieldMapper.class, idFieldMapper);
+            this.rootMappers.put(RoutingFieldMapper.class, new RoutingFieldMapper());
             // add default mappers, order is important (for example analyzer should come before the rest to set context.analyzer)
             this.rootMappers.put(SizeFieldMapper.class, new SizeFieldMapper());
             this.rootMappers.put(IndexFieldMapper.class, new IndexFieldMapper());
@@ -170,11 +174,10 @@ public class DocumentMapper implements ToXContent {
             this.rootMappers.put(AnalyzerMapper.class, new AnalyzerMapper());
             this.rootMappers.put(AllFieldMapper.class, new AllFieldMapper());
             this.rootMappers.put(BoostFieldMapper.class, new BoostFieldMapper());
-            this.rootMappers.put(RoutingFieldMapper.class, new RoutingFieldMapper());
             this.rootMappers.put(TimestampFieldMapper.class, new TimestampFieldMapper());
             this.rootMappers.put(TTLFieldMapper.class, new TTLFieldMapper());
-            this.rootMappers.put(UidFieldMapper.class, new UidFieldMapper());
-            // don't add parent field, by default its "null"
+            this.rootMappers.put(VersionFieldMapper.class, new VersionFieldMapper());
+            this.rootMappers.put(ParentFieldMapper.class, new ParentFieldMapper());
         }
 
         public Builder meta(ImmutableMap<String, Object> meta) {
@@ -227,7 +230,7 @@ public class DocumentMapper implements ToXContent {
     }
 
 
-    private ThreadLocal<ParseContext> cache = new ThreadLocal<ParseContext>() {
+    private CloseableThreadLocal<ParseContext> cache = new CloseableThreadLocal<ParseContext>() {
         @Override
         protected ParseContext initialValue() {
             return new ParseContext(index, indexSettings, docMapperParser, DocumentMapper.this, new ContentPath(0));
@@ -258,7 +261,7 @@ public class DocumentMapper implements ToXContent {
     private final NamedAnalyzer searchAnalyzer;
     private final NamedAnalyzer searchQuoteAnalyzer;
 
-    private volatile DocumentFieldMappers fieldMappers;
+    private final DocumentFieldMappers fieldMappers;
 
     private volatile ImmutableMap<String, ObjectMapper> objectMappers = ImmutableMap.of();
 
@@ -270,7 +273,7 @@ public class DocumentMapper implements ToXContent {
 
     private final Filter typeFilter;
 
-    private final Object mutex = new Object();
+    private final Object mappersMutex = new Object();
 
     private boolean initMappersAdded = true;
 
@@ -303,7 +306,7 @@ public class DocumentMapper implements ToXContent {
 
         this.typeFilter = typeMapper().termFilter(type, null);
 
-        if (rootMapper(ParentFieldMapper.class) != null) {
+        if (rootMapper(ParentFieldMapper.class).active()) {
             // mark the routing field mapper as required
             rootMapper(RoutingFieldMapper.class).markAsRequired();
         }
@@ -322,7 +325,8 @@ public class DocumentMapper implements ToXContent {
         // now traverse and get all the statically defined ones
         rootObjectMapper.traverse(fieldMappersAgg);
 
-        this.fieldMappers = new DocumentFieldMappers(this, fieldMappersAgg.mappers);
+        this.fieldMappers = new DocumentFieldMappers(this);
+        this.fieldMappers.addNewMappers(fieldMappersAgg.mappers);
 
         final Map<String, ObjectMapper> objectMappers = Maps.newHashMap();
         rootObjectMapper.traverse(new ObjectMapperListener() {
@@ -400,6 +404,18 @@ public class DocumentMapper implements ToXContent {
 
     public TTLFieldMapper TTLFieldMapper() {
         return rootMapper(TTLFieldMapper.class);
+    }
+
+    public IndexFieldMapper IndexFieldMapper() {
+        return rootMapper(IndexFieldMapper.class);
+    }
+
+    public SizeFieldMapper SizeFieldMapper() {
+        return rootMapper(SizeFieldMapper.class);
+    }
+
+    public BoostFieldMapper boostFieldMapper() {
+        return rootMapper(BoostFieldMapper.class);
     }
 
     public Analyzer indexAnalyzer() {
@@ -502,16 +518,6 @@ public class DocumentMapper implements ToXContent {
                 parser.nextToken();
             }
 
-            // fire up any new mappers if exists
-            if (!context.newFieldMappers().mappers.isEmpty()) {
-                addFieldMappers(context.newFieldMappers().mappers);
-                context.newFieldMappers().mappers.clear();
-            }
-            if (!context.newObjectMappers().mappers.isEmpty()) {
-                addObjectMappers(context.newObjectMappers().mappers);
-                context.newObjectMappers().mappers.clear();
-            }
-
             for (RootMapper rootMapper : rootMappersOrdered) {
                 rootMapper.postParse(context);
             }
@@ -520,21 +526,14 @@ public class DocumentMapper implements ToXContent {
                 rootMapper.validate(context);
             }
         } catch (Throwable e) {
-            // we have to fire up any new mappers even on a failure, because they
-            // have been added internally to each compound mapper...
-            // ... we have no option to "rollback" a change, which is very tricky in our copy on change system...
-            if (!context.newFieldMappers().mappers.isEmpty()) {
-                addFieldMappers(context.newFieldMappers().mappers);
-                context.newFieldMappers().mappers.clear();
-            }
-            if (!context.newObjectMappers().mappers.isEmpty()) {
-                addObjectMappers(context.newObjectMappers().mappers);
-                context.newObjectMappers().mappers.clear();
-            }
-
             // if its already a mapper parsing exception, no need to wrap it...
             if (e instanceof MapperParsingException) {
                 throw (MapperParsingException) e;
+            }
+
+            // Throw a more meaningful message if the document is empty.
+            if (source.source() != null && source.source().length() == 0) {
+                throw new MapperParsingException("failed to parse, document is empty");
             }
 
             throw new MapperParsingException("failed to parse", e);
@@ -564,20 +563,20 @@ public class DocumentMapper implements ToXContent {
             }
         }
 
-        ParsedDocument doc = new ParsedDocument(context.uid(), context.id(), context.type(), source.routing(), source.timestamp(), source.ttl(), context.docs(), context.analyzer(),
+        ParsedDocument doc = new ParsedDocument(context.uid(), context.version(), context.id(), context.type(), source.routing(), source.timestamp(), source.ttl(), context.docs(), context.analyzer(),
                 context.source(), context.mappingsModified()).parent(source.parent());
         // reset the context to free up memory
         context.reset(null, null, null, null);
         return doc;
     }
 
-    private void addFieldMappers(Collection<FieldMapper> fieldMappers) {
+    public void addFieldMappers(Collection<FieldMapper> fieldMappers) {
         addFieldMappers(fieldMappers.toArray(new FieldMapper[fieldMappers.size()]));
     }
 
-    private void addFieldMappers(FieldMapper... fieldMappers) {
-        synchronized (mutex) {
-            this.fieldMappers = this.fieldMappers.concat(this, fieldMappers);
+    public void addFieldMappers(FieldMapper... fieldMappers) {
+        synchronized (mappersMutex) {
+            this.fieldMappers.addNewMappers(Arrays.asList(fieldMappers));
         }
         for (FieldMapperListener listener : fieldMapperListeners) {
             listener.fieldMappers(fieldMappers);
@@ -600,12 +599,12 @@ public class DocumentMapper implements ToXContent {
         rootObjectMapper.traverse(listener);
     }
 
-    private void addObjectMappers(Collection<ObjectMapper> objectMappers) {
+    public void addObjectMappers(Collection<ObjectMapper> objectMappers) {
         addObjectMappers(objectMappers.toArray(new ObjectMapper[objectMappers.size()]));
     }
 
     private void addObjectMappers(ObjectMapper... objectMappers) {
-        synchronized (mutex) {
+        synchronized (mappersMutex) {
             MapBuilder<String, ObjectMapper> builder = MapBuilder.newMapBuilder(this.objectMappers);
             for (ObjectMapper objectMapper : objectMappers) {
                 builder.put(objectMapper.fullPath(), objectMapper);
@@ -633,8 +632,9 @@ public class DocumentMapper implements ToXContent {
 
     public synchronized MergeResult merge(DocumentMapper mergeWith, MergeFlags mergeFlags) {
         MergeContext mergeContext = new MergeContext(this, mergeFlags);
-        rootObjectMapper.merge(mergeWith.rootObjectMapper, mergeContext);
+        assert rootMappers.size() == mergeWith.rootMappers.size();
 
+        rootObjectMapper.merge(mergeWith.rootObjectMapper, mergeContext);
         for (Map.Entry<Class<? extends RootMapper>, RootMapper> entry : rootMappers.entrySet()) {
             // root mappers included in root object will get merge in the rootObjectMapper
             if (entry.getValue().includeInObject()) {
@@ -647,12 +647,6 @@ public class DocumentMapper implements ToXContent {
         }
 
         if (!mergeFlags.simulate()) {
-            if (!mergeContext.newFieldMappers().mappers.isEmpty()) {
-                addFieldMappers(mergeContext.newFieldMappers().mappers);
-            }
-            if (!mergeContext.newObjectMappers().mappers.isEmpty()) {
-                addObjectMappers(mergeContext.newObjectMappers().mappers);
-            }
             // let the merge with attributes to override the attributes
             meta = mergeWith.meta();
             // update the source of the merged one
@@ -674,7 +668,7 @@ public class DocumentMapper implements ToXContent {
     }
 
     public void close() {
-        cache.remove();
+        cache.close();
         rootObjectMapper.close();
         for (RootMapper rootMapper : rootMappersOrdered) {
             rootMapper.close();

@@ -30,11 +30,11 @@ import org.elasticsearch.common.settings.ImmutableSettings;
 import org.elasticsearch.common.settings.Settings;
 import org.elasticsearch.common.xcontent.XContentFactory;
 import org.elasticsearch.common.xcontent.XContentHelper;
-import org.elasticsearch.common.xcontent.XContentParser;
 import org.elasticsearch.index.AbstractIndexComponent;
 import org.elasticsearch.index.Index;
 import org.elasticsearch.index.analysis.AnalysisService;
 import org.elasticsearch.index.analysis.NamedAnalyzer;
+import org.elasticsearch.index.codec.docvaluesformat.DocValuesFormatService;
 import org.elasticsearch.index.codec.postingsformat.PostingsFormatService;
 import org.elasticsearch.index.mapper.core.*;
 import org.elasticsearch.index.mapper.geo.GeoPointFieldMapper;
@@ -47,7 +47,6 @@ import org.elasticsearch.index.mapper.object.RootObjectMapper;
 import org.elasticsearch.index.settings.IndexSettings;
 import org.elasticsearch.index.similarity.SimilarityLookupService;
 
-import java.io.IOException;
 import java.util.Map;
 
 import static org.elasticsearch.index.mapper.MapperBuilders.doc;
@@ -59,6 +58,7 @@ public class DocumentMapperParser extends AbstractIndexComponent {
 
     final AnalysisService analysisService;
     private final PostingsFormatService postingsFormatService;
+    private final DocValuesFormatService docValuesFormatService;
     private final SimilarityLookupService similarityLookupService;
 
     private final RootObjectMapper.TypeParser rootObjectTypeParser = new RootObjectMapper.TypeParser();
@@ -69,15 +69,18 @@ public class DocumentMapperParser extends AbstractIndexComponent {
     private volatile ImmutableMap<String, Mapper.TypeParser> rootTypeParsers;
 
     public DocumentMapperParser(Index index, AnalysisService analysisService, PostingsFormatService postingsFormatService,
-                                SimilarityLookupService similarityLookupService) {
-        this(index, ImmutableSettings.Builder.EMPTY_SETTINGS, analysisService, postingsFormatService, similarityLookupService);
+                                DocValuesFormatService docValuesFormatService, SimilarityLookupService similarityLookupService) {
+        this(index, ImmutableSettings.Builder.EMPTY_SETTINGS, analysisService, postingsFormatService, docValuesFormatService,
+                similarityLookupService);
     }
 
     public DocumentMapperParser(Index index, @IndexSettings Settings indexSettings, AnalysisService analysisService,
-                                PostingsFormatService postingsFormatService, SimilarityLookupService similarityLookupService) {
+                                PostingsFormatService postingsFormatService, DocValuesFormatService docValuesFormatService,
+                                SimilarityLookupService similarityLookupService) {
         super(index, indexSettings);
         this.analysisService = analysisService;
         this.postingsFormatService = postingsFormatService;
+        this.docValuesFormatService = docValuesFormatService;
         this.similarityLookupService = similarityLookupService;
         MapBuilder<String, Mapper.TypeParser> typeParsersBuilder = new MapBuilder<String, Mapper.TypeParser>()
                 .put(ByteFieldMapper.CONTENT_TYPE, new ByteFieldMapper.TypeParser())
@@ -94,6 +97,7 @@ public class DocumentMapperParser extends AbstractIndexComponent {
                 .put(ObjectMapper.CONTENT_TYPE, new ObjectMapper.TypeParser())
                 .put(ObjectMapper.NESTED_CONTENT_TYPE, new ObjectMapper.TypeParser())
                 .put(MultiFieldMapper.CONTENT_TYPE, new MultiFieldMapper.TypeParser())
+                .put(CompletionFieldMapper.CONTENT_TYPE, new CompletionFieldMapper.TypeParser())
                 .put(GeoPointFieldMapper.CONTENT_TYPE, new GeoPointFieldMapper.TypeParser());
 
         if (ShapesAvailability.JTS_AVAILABLE) {
@@ -115,6 +119,7 @@ public class DocumentMapperParser extends AbstractIndexComponent {
                 .put(TimestampFieldMapper.NAME, new TimestampFieldMapper.TypeParser())
                 .put(TTLFieldMapper.NAME, new TTLFieldMapper.TypeParser())
                 .put(UidFieldMapper.NAME, new UidFieldMapper.TypeParser())
+                .put(VersionFieldMapper.NAME, new VersionFieldMapper.TypeParser())
                 .put(IdFieldMapper.NAME, new IdFieldMapper.TypeParser())
                 .immutableMap();
     }
@@ -129,15 +134,14 @@ public class DocumentMapperParser extends AbstractIndexComponent {
 
     public void putRootTypeParser(String type, Mapper.TypeParser typeParser) {
         synchronized (typeParsersMutex) {
-            rootTypeParsers = new MapBuilder<String, Mapper.TypeParser>()
-                    .putAll(typeParsers)
+            rootTypeParsers = new MapBuilder<String, Mapper.TypeParser>(rootTypeParsers)
                     .put(type, typeParser)
                     .immutableMap();
         }
     }
 
     public Mapper.TypeParser.ParserContext parserContext() {
-        return new Mapper.TypeParser.ParserContext(postingsFormatService, analysisService, similarityLookupService, typeParsers);
+        return new Mapper.TypeParser.ParserContext(postingsFormatService, docValuesFormatService, analysisService, similarityLookupService, typeParsers);
     }
 
     public DocumentMapper parse(String source) throws MapperParsingException {
@@ -171,7 +175,7 @@ public class DocumentMapperParser extends AbstractIndexComponent {
             }
         }
 
-        Mapper.TypeParser.ParserContext parserContext = new Mapper.TypeParser.ParserContext(postingsFormatService, analysisService, similarityLookupService, typeParsers);
+        Mapper.TypeParser.ParserContext parserContext = new Mapper.TypeParser.ParserContext(postingsFormatService, docValuesFormatService, analysisService, similarityLookupService, typeParsers);
 
         DocumentMapper.Builder docBuilder = doc(index.name(), indexSettings, (RootObjectMapper.Builder) rootObjectTypeParser.parse(type, mapping, parserContext));
 
@@ -237,27 +241,32 @@ public class DocumentMapperParser extends AbstractIndexComponent {
     @SuppressWarnings({"unchecked"})
     private Tuple<String, Map<String, Object>> extractMapping(String type, String source) throws MapperParsingException {
         Map<String, Object> root;
-        XContentParser xContentParser = null;
         try {
-            xContentParser = XContentFactory.xContent(source).createParser(source);
-            root = xContentParser.mapOrdered();
-        } catch (IOException e) {
-            throw new MapperParsingException("Failed to parse mapping definition", e);
-        } finally {
-            if (xContentParser != null) {
-                xContentParser.close();
-            }
+            root = XContentFactory.xContent(source).createParser(source).mapOrderedAndClose();
+        } catch (Exception e) {
+            throw new MapperParsingException("failed to parse mapping definition", e);
         }
+        int size = root.size();
+        switch (size) {
+            case 0:
+                // if we don't have any keys throw an exception
+                throw new MapperParsingException("malformed mapping no root object found");
+            case 1:
+                break;
+            default:
+                // we always assume the first and single key is the mapping type root
+                throw new MapperParsingException("mapping must have the `type` as the root object");
 
-        // we always assume the first and single key is the mapping type root
-        if (root.keySet().size() != 1) {
-            throw new MapperParsingException("Mapping must have the `type` as the root object");
         }
 
         String rootName = root.keySet().iterator().next();
         if (type == null) {
             type = rootName;
+        } else if (!type.equals(rootName)) {
+            // we always assume the first and single key is the mapping type root
+            throw new MapperParsingException("mapping must have the `type` as the root object. Got [" + rootName + "], expected [" + type + "]");
         }
+
 
         return new Tuple<String, Map<String, Object>>(type, (Map<String, Object>) root.get(rootName));
     }

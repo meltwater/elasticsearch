@@ -26,17 +26,15 @@ import org.apache.lucene.analysis.TokenStream;
 import org.apache.lucene.analysis.tokenattributes.CharTermAttribute;
 import org.apache.lucene.index.Term;
 import org.apache.lucene.search.*;
-import org.elasticsearch.common.io.FastStringReader;
+import org.apache.lucene.util.automaton.RegExp;
 import org.elasticsearch.common.lucene.Lucene;
 import org.elasticsearch.common.lucene.search.Queries;
-import org.elasticsearch.common.regex.Regex;
 import org.elasticsearch.index.mapper.FieldMapper;
 import org.elasticsearch.index.mapper.MapperService;
 import org.elasticsearch.index.query.QueryParseContext;
 import org.elasticsearch.index.query.support.QueryParsers;
 
 import java.io.IOException;
-import java.io.StringReader;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
@@ -104,7 +102,7 @@ public class MapperQueryParser extends QueryParser {
         }
 
         this.forcedAnalyzer = settings.forcedAnalyzer() != null;
-        this.analyzer = forcedAnalyzer ? settings.forcedAnalyzer() : settings.defaultAnalyzer();
+        this.setAnalyzer(forcedAnalyzer ? settings.forcedAnalyzer() : settings.defaultAnalyzer());
         if (settings.forcedQuoteAnalyzer() != null) {
             this.forcedQuoteAnalyzer = true;
             this.quoteAnalyzer = settings.forcedQuoteAnalyzer();
@@ -129,45 +127,14 @@ public class MapperQueryParser extends QueryParser {
     }
 
     /**
-     * We override this one so we can get the fuzzy part to be treated as string, so people can do: "age:10~5". Note,
-     * we would love to support also "timestamp:2012-10-10~5d", but sadly the parser expects only numbers after the ~,
-     * hopefully we can change that in Lucene.
+     * We override this one so we can get the fuzzy part to be treated as string, so people can do: "age:10~5" or "timestamp:2012-10-10~5d"
      */
     @Override
-    Query handleBareTokenQuery(String qfield, Token term, Token fuzzySlop, boolean prefix, boolean wildcard, boolean fuzzy, boolean regexp) throws ParseException {
-        Query q;
-
-        String termImage = discardEscapeChar(term.image);
-        if (wildcard) {
-            q = getWildcardQuery(qfield, term.image);
-        } else if (prefix) {
-            q = getPrefixQuery(qfield,
-                    discardEscapeChar(term.image.substring
-                            (0, term.image.length() - 1)));
-        } else if (regexp) {
-            q = getRegexpQuery(qfield, term.image.substring(1, term.image.length() - 1));
-        } else if (fuzzy) {
-//            float fms = fuzzyMinSim;
-//            try {
-//                fms = Float.valueOf(fuzzySlop.image.substring(1)).floatValue();
-//            } catch (Exception ignored) {
-//            }
-//            if (fms < 0.0f) {
-//                throw new ParseException("Minimum similarity for a FuzzyQuery has to be between 0.0f and 1.0f !");
-//            } else if (fms >= 1.0f && fms != (int) fms) {
-//                throw new ParseException("Fractional edit distances are not allowed!");
-//            }
-//            q = getFuzzyQuery(qfield, termImage, fms);
-            if (fuzzySlop.image.length() == 1) {
-                q = getFuzzyQuery(qfield, termImage, Float.toString(fuzzyMinSim));
-            } else {
-                q = getFuzzyQuery(qfield, termImage, fuzzySlop.image.substring(1));
-            }
-        } else {
-
-            q = getFieldQuery(qfield, termImage, false);
+    Query handleBareFuzzy(String qfield, Token fuzzySlop, String termImage) throws ParseException {
+        if (fuzzySlop.image.length() == 1) {
+            return getFuzzyQuery(qfield, termImage, Float.toString(fuzzyMinSim));
         }
-        return q;
+        return getFuzzyQuery(qfield, termImage, fuzzySlop.image.substring(1));
     }
 
     @Override
@@ -183,7 +150,7 @@ public class MapperQueryParser extends QueryParser {
 
     @Override
     protected Query newMatchAllDocsQuery() {
-        return Queries.MATCH_ALL_QUERY;
+        return Queries.newMatchAllQuery();
     }
 
     @Override
@@ -215,7 +182,7 @@ public class MapperQueryParser extends QueryParser {
             } else {
                 List<BooleanClause> clauses = new ArrayList<BooleanClause>();
                 for (String mField : fields) {
-                    Query q = getFieldQuerySingle(mField, queryText, true);
+                    Query q = getFieldQuerySingle(mField, queryText, quoted);
                     if (q != null) {
                         applyBoost(mField, q);
                         clauses.add(new BooleanClause(q, BooleanClause.Occur.SHOULD));
@@ -231,12 +198,29 @@ public class MapperQueryParser extends QueryParser {
     }
 
     private Query getFieldQuerySingle(String field, String queryText, boolean quoted) throws ParseException {
+        if (!quoted && queryText.length() > 1) {
+            if (queryText.charAt(0) == '>') {
+                if (queryText.length() > 2) {
+                    if (queryText.charAt(1) == '=') {
+                        return getRangeQuerySingle(field, queryText.substring(2), null, true, true);
+                    }
+                }
+                return getRangeQuerySingle(field, queryText.substring(1), null, false, true);
+            } else if (queryText.charAt(0) == '<') {
+                if (queryText.length() > 2) {
+                    if (queryText.charAt(1) == '=') {
+                        return getRangeQuerySingle(field, null, queryText.substring(2), true, true);
+                    }
+                }
+                return getRangeQuerySingle(field, null, queryText.substring(1), true, false);
+            }
+        }
         currentMapper = null;
-        Analyzer oldAnalyzer = analyzer;
+        Analyzer oldAnalyzer = getAnalyzer();
         try {
             MapperService.SmartNameFieldMappers fieldMappers = null;
             if (quoted) {
-                analyzer = quoteAnalyzer;
+                setAnalyzer(quoteAnalyzer);
                 if (quoteFieldSuffix != null) {
                     fieldMappers = parseContext.smartFieldMappers(field + quoteFieldSuffix);
                 }
@@ -247,11 +231,11 @@ public class MapperQueryParser extends QueryParser {
             if (fieldMappers != null) {
                 if (quoted) {
                     if (!forcedQuoteAnalyzer) {
-                        analyzer = fieldMappers.searchQuoteAnalyzer();
+                        setAnalyzer(fieldMappers.searchQuoteAnalyzer());
                     }
                 } else {
                     if (!forcedAnalyzer) {
-                        analyzer = fieldMappers.searchAnalyzer();
+                        setAnalyzer(fieldMappers.searchAnalyzer());
                     }
                 }
                 currentMapper = fieldMappers.fieldMappers().mapper();
@@ -285,7 +269,7 @@ public class MapperQueryParser extends QueryParser {
             }
             return super.getFieldQuery(field, queryText, quoted);
         } finally {
-            analyzer = oldAnalyzer;
+            setAnalyzer(oldAnalyzer);
         }
     }
 
@@ -300,7 +284,7 @@ public class MapperQueryParser extends QueryParser {
                     Query q = super.getFieldQuery(mField, queryText, slop);
                     if (q != null) {
                         added = true;
-                        applyBoost(field, q);
+                        applyBoost(mField, q);
                         applySlop(q, slop);
                         disMaxQuery.add(q);
                     }
@@ -314,7 +298,7 @@ public class MapperQueryParser extends QueryParser {
                 for (String mField : fields) {
                     Query q = super.getFieldQuery(mField, queryText, slop);
                     if (q != null) {
-                        applyBoost(field, q);
+                        applyBoost(mField, q);
                         applySlop(q, slop);
                         clauses.add(new BooleanClause(q, BooleanClause.Occur.SHOULD));
                     }
@@ -336,45 +320,45 @@ public class MapperQueryParser extends QueryParser {
         if ("*".equals(part2)) {
             part2 = null;
         }
-        if (lowercaseExpandedTerms) {
-            part1 = part1 == null ? null : part1.toLowerCase(locale);
-            part2 = part2 == null ? null : part2.toLowerCase(locale);
-        }
+
         Collection<String> fields = extractMultiFields(field);
-        if (fields != null) {
-            if (fields.size() == 1) {
-                return getRangeQuerySingle(fields.iterator().next(), part1, part2, startInclusive, endInclusive);
-            }
-            if (settings.useDisMax()) {
-                DisjunctionMaxQuery disMaxQuery = new DisjunctionMaxQuery(settings.tieBreaker());
-                boolean added = false;
-                for (String mField : fields) {
-                    Query q = getRangeQuerySingle(mField, part1, part2, startInclusive, endInclusive);
-                    if (q != null) {
-                        added = true;
-                        applyBoost(mField, q);
-                        disMaxQuery.add(q);
-                    }
-                }
-                if (!added) {
-                    return null;
-                }
-                return disMaxQuery;
-            } else {
-                List<BooleanClause> clauses = new ArrayList<BooleanClause>();
-                for (String mField : fields) {
-                    Query q = getRangeQuerySingle(mField, part1, part2, startInclusive, endInclusive);
-                    if (q != null) {
-                        applyBoost(mField, q);
-                        clauses.add(new BooleanClause(q, BooleanClause.Occur.SHOULD));
-                    }
-                }
-                if (clauses.size() == 0)  // happens for stopwords
-                    return null;
-                return getBooleanQuery(clauses, true);
-            }
-        } else {
+
+        if (fields == null) {
             return getRangeQuerySingle(field, part1, part2, startInclusive, endInclusive);
+        }
+
+
+        if (fields.size() == 1) {
+            return getRangeQuerySingle(fields.iterator().next(), part1, part2, startInclusive, endInclusive);
+        }
+
+        if (settings.useDisMax()) {
+            DisjunctionMaxQuery disMaxQuery = new DisjunctionMaxQuery(settings.tieBreaker());
+            boolean added = false;
+            for (String mField : fields) {
+                Query q = getRangeQuerySingle(mField, part1, part2, startInclusive, endInclusive);
+                if (q != null) {
+                    added = true;
+                    applyBoost(mField, q);
+                    disMaxQuery.add(q);
+                }
+            }
+            if (!added) {
+                return null;
+            }
+            return disMaxQuery;
+        } else {
+            List<BooleanClause> clauses = new ArrayList<BooleanClause>();
+            for (String mField : fields) {
+                Query q = getRangeQuerySingle(mField, part1, part2, startInclusive, endInclusive);
+                if (q != null) {
+                    applyBoost(mField, q);
+                    clauses.add(new BooleanClause(q, BooleanClause.Occur.SHOULD));
+                }
+            }
+            if (clauses.size() == 0)  // happens for stopwords
+                return null;
+            return getBooleanQuery(clauses, true);
         }
     }
 
@@ -384,8 +368,14 @@ public class MapperQueryParser extends QueryParser {
         if (fieldMappers != null) {
             currentMapper = fieldMappers.fieldMappers().mapper();
             if (currentMapper != null) {
+
+                if (lowercaseExpandedTerms && !currentMapper.isNumeric()) {
+                    part1 = part1 == null ? null : part1.toLowerCase(locale);
+                    part2 = part2 == null ? null : part2.toLowerCase(locale);
+                }
+
                 try {
-                    Query rangeQuery = currentMapper.rangeQuery(part1, part2, startInclusive, startInclusive, parseContext);
+                    Query rangeQuery = currentMapper.rangeQuery(part1, part2, startInclusive, endInclusive, parseContext);
                     return wrapSmartNameQuery(rangeQuery, fieldMappers, parseContext);
                 } catch (RuntimeException e) {
                     if (settings.lenient()) {
@@ -512,12 +502,12 @@ public class MapperQueryParser extends QueryParser {
 
     private Query getPrefixQuerySingle(String field, String termStr) throws ParseException {
         currentMapper = null;
-        Analyzer oldAnalyzer = analyzer;
+        Analyzer oldAnalyzer = getAnalyzer();
         try {
             MapperService.SmartNameFieldMappers fieldMappers = parseContext.smartFieldMappers(field);
             if (fieldMappers != null) {
                 if (!forcedAnalyzer) {
-                    analyzer = fieldMappers.searchAnalyzer();
+                    setAnalyzer(fieldMappers.searchAnalyzer());
                 }
                 currentMapper = fieldMappers.fieldMappers().mapper();
                 if (currentMapper != null) {
@@ -547,7 +537,7 @@ public class MapperQueryParser extends QueryParser {
             }
             throw e;
         } finally {
-            analyzer = oldAnalyzer;
+            setAnalyzer(oldAnalyzer);
         }
     }
 
@@ -558,7 +548,7 @@ public class MapperQueryParser extends QueryParser {
         // get Analyzer from superclass and tokenize the term
         TokenStream source;
         try {
-            source = getAnalyzer().tokenStream(field, new StringReader(termStr));
+            source = getAnalyzer().tokenStream(field, termStr);
             source.reset();
         } catch (IOException e) {
             return super.getPrefixQuery(field, termStr);
@@ -665,12 +655,12 @@ public class MapperQueryParser extends QueryParser {
     private Query getWildcardQuerySingle(String field, String termStr) throws ParseException {
         String indexedNameField = field;
         currentMapper = null;
-        Analyzer oldAnalyzer = analyzer;
+        Analyzer oldAnalyzer = getAnalyzer();
         try {
             MapperService.SmartNameFieldMappers fieldMappers = parseContext.smartFieldMappers(field);
             if (fieldMappers != null) {
                 if (!forcedAnalyzer) {
-                    analyzer = fieldMappers.searchAnalyzer();
+                    setAnalyzer(fieldMappers.searchAnalyzer());
                 }
                 currentMapper = fieldMappers.fieldMappers().mapper();
                 if (currentMapper != null) {
@@ -685,7 +675,7 @@ public class MapperQueryParser extends QueryParser {
             }
             throw e;
         } finally {
-            analyzer = oldAnalyzer;
+            setAnalyzer(oldAnalyzer);
         }
     }
 
@@ -701,7 +691,7 @@ public class MapperQueryParser extends QueryParser {
             if (c == '?' || c == '*') {
                 if (isWithinToken) {
                     try {
-                        TokenStream source = getAnalyzer().tokenStream(field, new FastStringReader(tmp.toString()));
+                        TokenStream source = getAnalyzer().tokenStream(field, tmp.toString());
                         source.reset();
                         CharTermAttribute termAtt = source.addAttribute(CharTermAttribute.class);
                         if (source.incrementToken()) {
@@ -731,7 +721,7 @@ public class MapperQueryParser extends QueryParser {
         }
         if (isWithinToken) {
             try {
-                TokenStream source = getAnalyzer().tokenStream(field, new FastStringReader(tmp.toString()));
+                TokenStream source = getAnalyzer().tokenStream(field, tmp.toString());
                 source.reset();
                 CharTermAttribute termAtt = source.addAttribute(CharTermAttribute.class);
                 if (source.incrementToken()) {
@@ -756,6 +746,90 @@ public class MapperQueryParser extends QueryParser {
     }
 
     @Override
+    protected Query getRegexpQuery(String field, String termStr) throws ParseException {
+        if (lowercaseExpandedTerms) {
+            termStr = termStr.toLowerCase(locale);
+        }
+        Collection<String> fields = extractMultiFields(field);
+        if (fields != null) {
+            if (fields.size() == 1) {
+                return getRegexpQuerySingle(fields.iterator().next(), termStr);
+            }
+            if (settings.useDisMax()) {
+                DisjunctionMaxQuery disMaxQuery = new DisjunctionMaxQuery(settings.tieBreaker());
+                boolean added = false;
+                for (String mField : fields) {
+                    Query q = getRegexpQuerySingle(mField, termStr);
+                    if (q != null) {
+                        added = true;
+                        applyBoost(mField, q);
+                        disMaxQuery.add(q);
+                    }
+                }
+                if (!added) {
+                    return null;
+                }
+                return disMaxQuery;
+            } else {
+                List<BooleanClause> clauses = new ArrayList<BooleanClause>();
+                for (String mField : fields) {
+                    Query q = getRegexpQuerySingle(mField, termStr);
+                    if (q != null) {
+                        applyBoost(mField, q);
+                        clauses.add(new BooleanClause(q, BooleanClause.Occur.SHOULD));
+                    }
+                }
+                if (clauses.size() == 0)  // happens for stopwords
+                    return null;
+                return getBooleanQuery(clauses, true);
+            }
+        } else {
+            return getRegexpQuerySingle(field, termStr);
+        }
+    }
+
+    private Query getRegexpQuerySingle(String field, String termStr) throws ParseException {
+        currentMapper = null;
+        Analyzer oldAnalyzer = getAnalyzer();
+        try {
+            MapperService.SmartNameFieldMappers fieldMappers = parseContext.smartFieldMappers(field);
+            if (fieldMappers != null) {
+                if (!forcedAnalyzer) {
+                    setAnalyzer(fieldMappers.searchAnalyzer());
+                }
+                currentMapper = fieldMappers.fieldMappers().mapper();
+                if (currentMapper != null) {
+                    Query query = null;
+                    if (currentMapper.useTermQueryWithQueryString()) {
+                        if (fieldMappers.explicitTypeInNameWithDocMapper()) {
+                            String[] previousTypes = QueryParseContext.setTypesWithPrevious(new String[]{fieldMappers.docMapper().type()});
+                            try {
+                                query = currentMapper.regexpQuery(termStr, RegExp.ALL, multiTermRewriteMethod, parseContext);
+                            } finally {
+                                QueryParseContext.setTypes(previousTypes);
+                            }
+                        } else {
+                            query = currentMapper.regexpQuery(termStr, RegExp.ALL, multiTermRewriteMethod, parseContext);
+                        }
+                    }
+                    if (query == null) {
+                        query = super.getRegexpQuery(field, termStr);
+                    }
+                    return wrapSmartNameQuery(query, fieldMappers, parseContext);
+                }
+            }
+            return super.getRegexpQuery(field, termStr);
+        } catch (RuntimeException e) {
+            if (settings.lenient()) {
+                return null;
+            }
+            throw e;
+        } finally {
+            setAnalyzer(oldAnalyzer);
+        }
+    }
+
+    @Override
     protected Query getBooleanQuery(List<BooleanClause> clauses, boolean disableCoord) throws ParseException {
         Query q = super.getBooleanQuery(clauses, disableCoord);
         if (q == null) {
@@ -766,7 +840,10 @@ public class MapperQueryParser extends QueryParser {
 
     private void applyBoost(String field, Query q) {
         if (settings.boosts() != null) {
-            float boost = settings.boosts().get(field);
+            float boost = 1f;
+            if (settings.boosts().containsKey(field)) {
+                boost = settings.boosts().lget();
+            }
             q.setBoost(boost);
         }
     }
@@ -782,9 +859,7 @@ public class MapperQueryParser extends QueryParser {
     private Collection<String> extractMultiFields(String field) {
         Collection<String> fields = null;
         if (field != null) {
-            if (Regex.isSimpleMatchPattern(field)) {
-                fields = parseContext.mapperService().simpleMatchToIndexNames(field);
-            }
+            fields = parseContext.simpleMatchToIndexNames(field);
         } else {
             fields = settings.fields();
         }

@@ -29,9 +29,9 @@ import org.elasticsearch.common.inject.Inject;
 import org.elasticsearch.common.settings.Settings;
 import org.elasticsearch.common.unit.TimeValue;
 import org.elasticsearch.rest.*;
-import org.elasticsearch.rest.action.support.RestActions;
 
 import java.io.IOException;
+
 
 /**
  */
@@ -53,7 +53,7 @@ public class RestNodesHotThreadsAction extends BaseRestHandler {
 
     @Override
     public void handleRequest(final RestRequest request, final RestChannel channel) {
-        String[] nodesIds = RestActions.splitNodes(request.param("nodeId"));
+        String[] nodesIds = Strings.splitStringByCommaToArray(request.param("nodeId"));
         NodesHotThreadsRequest nodesHotThreadsRequest = new NodesHotThreadsRequest(nodesIds);
         nodesHotThreadsRequest.threads(request.paramAsInt("threads", nodesHotThreadsRequest.threads()));
         nodesHotThreadsRequest.type(request.param("type", nodesHotThreadsRequest.type()));
@@ -65,12 +65,12 @@ public class RestNodesHotThreadsAction extends BaseRestHandler {
                 try {
                     StringBuilder sb = new StringBuilder();
                     for (NodeHotThreads node : response) {
-                        sb.append("::: ").append(node.node().toString()).append("\n");
-                        Strings.spaceify(3, node.hotThreads(), sb);
+                        sb.append("::: ").append(node.getNode().toString()).append("\n");
+                        Strings.spaceify(3, node.getHotThreads(), sb);
                         sb.append('\n');
                     }
                     channel.sendResponse(new StringRestResponse(RestStatus.OK, sb.toString()));
-                } catch (Exception e) {
+                } catch (Throwable e) {
                     onFailure(e);
                 }
             }

@@ -58,6 +58,7 @@ public class TopChildrenQueryParser implements QueryParser {
         ScoreType scoreType = ScoreType.MAX;
         int factor = 5;
         int incrementalFactor = 2;
+        String queryName = null;
 
         String currentFieldName = null;
         XContentParser.Token token;
@@ -85,33 +86,41 @@ public class TopChildrenQueryParser implements QueryParser {
                     throw new QueryParsingException(parseContext.index(), "the [_scope] support in [top_children] query has been removed, use a filter as a facet_filter in the relevant global facet");
                 } else if ("score".equals(currentFieldName)) {
                     scoreType = ScoreType.fromString(parser.text());
+                } else if ("score_mode".equals(currentFieldName) || "scoreMode".equals(currentFieldName)) {
+                    scoreType = ScoreType.fromString(parser.text());
                 } else if ("boost".equals(currentFieldName)) {
                     boost = parser.floatValue();
                 } else if ("factor".equals(currentFieldName)) {
                     factor = parser.intValue();
                 } else if ("incremental_factor".equals(currentFieldName) || "incrementalFactor".equals(currentFieldName)) {
                     incrementalFactor = parser.intValue();
+                } else if ("_name".equals(currentFieldName)) {
+                    queryName = parser.text();
                 } else {
                     throw new QueryParsingException(parseContext.index(), "[top_children] query does not support [" + currentFieldName + "]");
                 }
             }
         }
         if (!queryFound) {
-            throw new QueryParsingException(parseContext.index(), "[child] requires 'query' field");
+            throw new QueryParsingException(parseContext.index(), "[top_children] requires 'query' field");
         }
         if (childType == null) {
-            throw new QueryParsingException(parseContext.index(), "[child] requires 'type' field");
+            throw new QueryParsingException(parseContext.index(), "[top_children] requires 'type' field");
         }
 
         if (query == null) {
             return null;
         }
 
+        if ("delete_by_query".equals(SearchContext.current().source())) {
+            throw new QueryParsingException(parseContext.index(), "[top_children] unsupported in delete_by_query api");
+        }
+
         DocumentMapper childDocMapper = parseContext.mapperService().documentMapper(childType);
         if (childDocMapper == null) {
             throw new QueryParsingException(parseContext.index(), "No mapping for for type [" + childType + "]");
         }
-        if (childDocMapper.parentFieldMapper() == null) {
+        if (!childDocMapper.parentFieldMapper().active()) {
             throw new QueryParsingException(parseContext.index(), "Type [" + childType + "] does not have parent mapping");
         }
         String parentType = childDocMapper.parentFieldMapper().type();
@@ -119,10 +128,10 @@ public class TopChildrenQueryParser implements QueryParser {
         query.setBoost(boost);
         // wrap the query with type query
         query = new XFilteredQuery(query, parseContext.cacheFilter(childDocMapper.typeFilter(), null));
-
-        SearchContext searchContext = SearchContext.current();
-        TopChildrenQuery childQuery = new TopChildrenQuery(searchContext, query, childType, parentType, scoreType, factor, incrementalFactor);
-        searchContext.addRewrite(childQuery);
+        TopChildrenQuery childQuery = new TopChildrenQuery(query, childType, parentType, scoreType, factor, incrementalFactor, parseContext.cacheRecycler());
+        if (queryName != null) {
+            parseContext.addNamedQuery(queryName, childQuery);
+        }
         return childQuery;
     }
 }

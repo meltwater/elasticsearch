@@ -24,7 +24,6 @@ import org.elasticsearch.action.ActionRequestValidationException;
 import org.elasticsearch.action.support.broadcast.BroadcastOperationRequest;
 import org.elasticsearch.client.Requests;
 import org.elasticsearch.common.Nullable;
-import org.elasticsearch.common.Required;
 import org.elasticsearch.common.Strings;
 import org.elasticsearch.common.bytes.BytesArray;
 import org.elasticsearch.common.bytes.BytesReference;
@@ -62,10 +61,15 @@ public class CountRequest extends BroadcastOperationRequest<CountRequest> {
     @Nullable
     protected String routing;
 
+    @Nullable
+    private String preference;
+
     private BytesReference querySource;
     private boolean querySourceUnsafe;
 
     private String[] types = Strings.EMPTY_ARRAY;
+
+    long nowInMillis;
 
     CountRequest() {
     }
@@ -120,7 +124,6 @@ public class CountRequest extends BroadcastOperationRequest<CountRequest> {
      *
      * @see org.elasticsearch.index.query.QueryBuilders
      */
-    @Required
     public CountRequest query(QueryBuilder queryBuilder) {
         this.querySource = queryBuilder.buildAsBytes();
         this.querySourceUnsafe = false;
@@ -130,7 +133,6 @@ public class CountRequest extends BroadcastOperationRequest<CountRequest> {
     /**
      * The query source to execute in the form of a map.
      */
-    @Required
     public CountRequest query(Map querySource) {
         try {
             XContentBuilder builder = XContentFactory.contentBuilder(contentType);
@@ -141,7 +143,6 @@ public class CountRequest extends BroadcastOperationRequest<CountRequest> {
         }
     }
 
-    @Required
     public CountRequest query(XContentBuilder builder) {
         this.querySource = builder.bytes();
         this.querySourceUnsafe = false;
@@ -152,7 +153,6 @@ public class CountRequest extends BroadcastOperationRequest<CountRequest> {
      * The query source to execute. It is preferable to use either {@link #query(byte[])}
      * or {@link #query(org.elasticsearch.index.query.QueryBuilder)}.
      */
-    @Required
     public CountRequest query(String querySource) {
         this.querySource = new BytesArray(querySource);
         this.querySourceUnsafe = false;
@@ -162,7 +162,6 @@ public class CountRequest extends BroadcastOperationRequest<CountRequest> {
     /**
      * The query source to execute.
      */
-    @Required
     public CountRequest query(byte[] querySource) {
         return query(querySource, 0, querySource.length, false);
     }
@@ -170,12 +169,10 @@ public class CountRequest extends BroadcastOperationRequest<CountRequest> {
     /**
      * The query source to execute.
      */
-    @Required
     public CountRequest query(byte[] querySource, int offset, int length, boolean unsafe) {
         return query(new BytesArray(querySource, offset, length), unsafe);
     }
 
-    @Required
     public CountRequest query(BytesReference querySource, boolean unsafe) {
         this.querySource = querySource;
         this.querySourceUnsafe = unsafe;
@@ -220,11 +217,21 @@ public class CountRequest extends BroadcastOperationRequest<CountRequest> {
         return this;
     }
 
+    public CountRequest preference(String preference) {
+        this.preference = preference;
+        return this;
+    }
+
+    public String preference() {
+        return this.preference;
+    }
+
     @Override
     public void readFrom(StreamInput in) throws IOException {
         super.readFrom(in);
         minScore = in.readFloat();
         routing = in.readOptionalString();
+        preference = in.readOptionalString();
         querySourceUnsafe = false;
         querySource = in.readBytesReference();
         types = in.readStringArray();
@@ -235,6 +242,7 @@ public class CountRequest extends BroadcastOperationRequest<CountRequest> {
         super.writeTo(out);
         out.writeFloat(minScore);
         out.writeOptionalString(routing);
+        out.writeOptionalString(preference);
         out.writeBytesReference(querySource);
         out.writeStringArray(types);
     }

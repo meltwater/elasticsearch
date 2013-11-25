@@ -21,156 +21,95 @@ package org.elasticsearch.index.fielddata;
 
 import org.elasticsearch.ElasticSearchIllegalStateException;
 import org.elasticsearch.common.geo.GeoPoint;
-import org.elasticsearch.index.fielddata.util.GeoPointArrayRef;
 
 /**
+ * A state-full lightweight per document set of {@link GeoPoint} values.
+ * To iterate over values in a document use the following pattern:
+ * <pre>
+ *   GeoPointValues values = ..;
+ *   final int numValues = values.setDocId(docId);
+ *   for (int i = 0; i < numValues; i++) {
+ *       GeoPoint value = values.nextValue();
+ *       // process value
+ *   }
+ * </pre>
  */
-public interface GeoPointValues {
+public abstract class GeoPointValues {
 
-    static final GeoPointValues EMPTY = new Empty();
+    /**
+     * An empty {@link GeoPointValues instance}
+     */
+    public static final GeoPointValues EMPTY = new Empty();
+    
+    private final boolean multiValued;
 
+    protected int docId = -1;
+
+    /**
+     * Creates a new {@link GeoPointValues} instance
+     * @param multiValued <code>true</code> iff this instance is multivalued. Otherwise <code>false</code>.
+     */
+    protected GeoPointValues(boolean multiValued) {
+        this.multiValued = multiValued;
+    }
     /**
      * Is one of the documents in this field data values is multi valued?
      */
-    boolean isMultiValued();
-
-    /**
-     * Is there a value for this doc?
-     */
-    boolean hasValue(int docId);
-
-    GeoPoint getValue(int docId);
-
-    GeoPoint getValueSafe(int docId);
-
-    GeoPointArrayRef getValues(int docId);
-
-    Iter getIter(int docId);
-
-    Iter getIterSafe(int docId);
-
-    /**
-     * Go over all the possible values in their geo point format for a specific doc.
-     */
-    void forEachValueInDoc(int docId, ValueInDocProc proc);
-
-    /**
-     * Go over all the possible values in their geo point format for a specific doc.
-     */
-    void forEachSafeValueInDoc(int docId, ValueInDocProc proc);
-
-    public static interface ValueInDocProc {
-        void onValue(int docId, GeoPoint value);
-
-        void onMissing(int docId);
+    public final boolean isMultiValued() {
+        return multiValued;
     }
 
     /**
-     * Go over all the possible values in their geo point format for a specific doc.
+     * Sets iteration to the specified docID and returns the number of
+     * values for this document ID,
+     * @param docId document ID
+     *
+     * @see #nextValue()
      */
-    void forEachLatLonValueInDoc(int docId, LatLonValueInDocProc proc);
+    public abstract int setDocument(int docId);
+    /**
+     * Returns the next value for the current docID set to {@link #setDocument(int)}.
+     * This method should only be called <tt>N</tt> times where <tt>N</tt> is the number
+     * returned from {@link #setDocument(int)}. If called more than <tt>N</tt> times the behavior
+     * is undefined.
+     * <p>
+     * If this instance returns ordered values the <tt>Nth</tt> value is strictly less than the <tt>N+1</tt> value with
+     * respect to the {@link AtomicFieldData.Order} returned from {@link #getOrder()}. If this instance returns
+     * <i>unordered</i> values {@link #getOrder()} must return {@link AtomicFieldData.Order#NONE}
+     * Note: the values returned are de-duplicated, only unique values are returned.
+     * </p>
+     *
+     * Note: the returned {@link GeoPoint} might be shared across invocations.
+     *
+     * @return the next value for the current docID set to {@link #setDocument(int)}.
+     */
+    public abstract GeoPoint nextValue();
 
-    public static interface LatLonValueInDocProc {
-        void onValue(int docId, double lat, double lon);
-
-        void onMissing(int docId);
+    /**
+     * Returns the order the values are returned from {@link #nextValue()}.
+     * <p> Note: {@link GeoPointValues} have {@link AtomicFieldData.Order#NONE} by default.</p>
+     */
+    public AtomicFieldData.Order getOrder() {
+        return AtomicFieldData.Order.NONE;
     }
 
-    static interface Iter {
-
-        boolean hasNext();
-
-        GeoPoint next();
-
-        static class Empty implements Iter {
-
-            public static final Empty INSTANCE = new Empty();
-
-            @Override
-            public boolean hasNext() {
-                return false;
-            }
-
-            @Override
-            public GeoPoint next() {
-                throw new ElasticSearchIllegalStateException();
-            }
-        }
-
-        static class Single implements Iter {
-
-            public GeoPoint value;
-            public boolean done;
-
-            public Single reset(GeoPoint value) {
-                this.value = value;
-                this.done = false;
-                return this;
-            }
-
-            @Override
-            public boolean hasNext() {
-                return !done;
-            }
-
-            @Override
-            public GeoPoint next() {
-                assert !done;
-                done = true;
-                return value;
-            }
-        }
-    }
-
-    static class Empty implements GeoPointValues {
-        @Override
-        public boolean isMultiValued() {
-            return false;
+    /**
+     * An empty {@link GeoPointValues} implementation
+     */
+    private static final class Empty extends GeoPointValues {
+        protected Empty() {
+            super(false);
         }
 
         @Override
-        public boolean hasValue(int docId) {
-            return false;
+        public int setDocument(int docId) {
+            return 0;
         }
 
         @Override
-        public GeoPoint getValueSafe(int docId) {
-            return getValue(docId);
+        public GeoPoint nextValue() {
+            throw new ElasticSearchIllegalStateException("Empty GeoPointValues has no next value");
         }
 
-        @Override
-        public Iter getIterSafe(int docId) {
-            return getIter(docId);
-        }
-
-        @Override
-        public void forEachSafeValueInDoc(int docId, ValueInDocProc proc) {
-
-        }
-
-        @Override
-        public void forEachLatLonValueInDoc(int docId, LatLonValueInDocProc proc) {
-            //To change body of implemented methods use File | Settings | File Templates.
-        }
-
-        @Override
-        public GeoPoint getValue(int docId) {
-            throw new ElasticSearchIllegalStateException("Can't retrieve a value from an empty GeoPointValues");
-        }
-
-        @Override
-        public GeoPointArrayRef getValues(int docId) {
-            return GeoPointArrayRef.EMPTY;
-        }
-
-        @Override
-        public Iter getIter(int docId) {
-            return Iter.Empty.INSTANCE;
-        }
-
-        @Override
-        public void forEachValueInDoc(int docId, ValueInDocProc proc) {
-            proc.onMissing(docId);
-        }
     }
 }

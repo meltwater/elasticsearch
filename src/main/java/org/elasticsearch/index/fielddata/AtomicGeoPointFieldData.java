@@ -19,10 +19,35 @@
 
 package org.elasticsearch.index.fielddata;
 
+import org.apache.lucene.util.BytesRef;
+import org.elasticsearch.common.geo.GeoHashUtils;
+import org.elasticsearch.common.geo.GeoPoint;
+
 /**
  */
-public interface AtomicGeoPointFieldData<Script extends ScriptDocValues> extends AtomicFieldData<Script> {
+public abstract class AtomicGeoPointFieldData<Script extends ScriptDocValues> implements AtomicFieldData<Script> {
 
-    GeoPointValues getGeoPointValues();
+    public abstract GeoPointValues getGeoPointValues();
+
+    @Override
+    public BytesValues getBytesValues(boolean needsHashes) {
+        final GeoPointValues values = getGeoPointValues();
+        return new BytesValues(values.isMultiValued()) {
+
+            @Override
+            public int setDocument(int docId) {
+                this.docId = docId;
+                return values.setDocument(docId);
+            }
+
+            @Override
+            public BytesRef nextValue() {
+                GeoPoint value = values.nextValue();
+                scratch.copyChars(GeoHashUtils.encode(value.lat(), value.lon()));
+                return scratch;
+            }
+
+        };
+    }
 
 }

@@ -19,15 +19,17 @@
 
 package org.elasticsearch.index.query;
 
-import org.apache.lucene.search.ConstantScoreQuery;
 import org.apache.lucene.search.Filter;
 import org.apache.lucene.search.Query;
 import org.elasticsearch.common.Strings;
 import org.elasticsearch.common.inject.Inject;
+import org.elasticsearch.common.lucene.search.XConstantScoreQuery;
+import org.elasticsearch.common.lucene.search.XFilteredQuery;
 import org.elasticsearch.common.xcontent.XContentParser;
 import org.elasticsearch.index.mapper.DocumentMapper;
+import org.elasticsearch.index.search.child.ChildrenConstantScoreQuery;
 import org.elasticsearch.index.search.child.ChildrenQuery;
-import org.elasticsearch.index.search.child.HasChildFilter;
+import org.elasticsearch.index.search.child.DeleteByQueryWrappingFilter;
 import org.elasticsearch.index.search.child.ScoreType;
 import org.elasticsearch.search.internal.SearchContext;
 
@@ -58,7 +60,8 @@ public class HasChildQueryParser implements QueryParser {
         float boost = 1.0f;
         String childType = null;
         ScoreType scoreType = null;
-        String executionType = "uid";
+        int shortCircuitParentDocSet = 8192;
+        String queryName = null;
 
         String currentFieldName = null;
         XContentParser.Token token;
@@ -82,8 +85,6 @@ public class HasChildQueryParser implements QueryParser {
             } else if (token.isValue()) {
                 if ("type".equals(currentFieldName) || "child_type".equals(currentFieldName) || "childType".equals(currentFieldName)) {
                     childType = parser.text();
-                } else if ("execution_type".equals(currentFieldName) || "executionType".equals(currentFieldName)) {// This option is experimental and will most likely be removed.
-                    executionType = parser.text();
                 } else if ("_scope".equals(currentFieldName)) {
                     throw new QueryParsingException(parseContext.index(), "the [_scope] support in [has_child] query has been removed, use a filter as a facet_filter in the relevant global facet");
                 } else if ("score_type".equals(currentFieldName) || "scoreType".equals(currentFieldName)) {
@@ -91,8 +92,17 @@ public class HasChildQueryParser implements QueryParser {
                     if (!"none".equals(scoreTypeValue)) {
                         scoreType = ScoreType.fromString(scoreTypeValue);
                     }
+                } else if ("score_mode".equals(currentFieldName) || "scoreMode".equals(currentFieldName)) {
+                    String scoreModeValue = parser.text();
+                    if (!"none".equals(scoreModeValue)) {
+                        scoreType = ScoreType.fromString(scoreModeValue);
+                    }
                 } else if ("boost".equals(currentFieldName)) {
                     boost = parser.floatValue();
+                } else if ("short_circuit_cutoff".equals(currentFieldName)) {
+                    shortCircuitParentDocSet = parser.intValue();
+                } else if ("_name".equals(currentFieldName)) {
+                    queryName = parser.text();
                 } else {
                     throw new QueryParsingException(parseContext.index(), "[has_child] query does not support [" + currentFieldName + "]");
                 }
@@ -113,24 +123,32 @@ public class HasChildQueryParser implements QueryParser {
         if (childDocMapper == null) {
             throw new QueryParsingException(parseContext.index(), "[has_child] No mapping for for type [" + childType + "]");
         }
-        if (childDocMapper.parentFieldMapper() == null) {
+        if (!childDocMapper.parentFieldMapper().active()) {
             throw new QueryParsingException(parseContext.index(), "[has_child]  Type [" + childType + "] does not have parent mapping");
         }
         String parentType = childDocMapper.parentFieldMapper().type();
         DocumentMapper parentDocMapper = parseContext.mapperService().documentMapper(parentType);
 
+        if (parentDocMapper == null) {
+            throw new QueryParsingException(parseContext.index(), "[has_child]  Type [" + childType + "] points to a non existent parent type [" + parentType + "]");
+        }
+
         // wrap the query with type query
-        SearchContext searchContext = SearchContext.current();
+        innerQuery = new XFilteredQuery(innerQuery, parseContext.cacheFilter(childDocMapper.typeFilter(), null));
+
+        boolean deleteByQuery = "delete_by_query".equals(SearchContext.current().source());
         Query query;
-        if (scoreType != null) {
-            Filter parentFilter = parseContext.cacheFilter(parentDocMapper.typeFilter(), null);
-            ChildrenQuery childrenQuery = new ChildrenQuery(searchContext, parentType, childType, parentFilter, innerQuery, scoreType);
-            searchContext.addRewrite(childrenQuery);
-            query = childrenQuery;
+        Filter parentFilter = parseContext.cacheFilter(parentDocMapper.typeFilter(), null);
+        if (!deleteByQuery && scoreType != null) {
+            query = new ChildrenQuery(parentType, childType, parentFilter, innerQuery, scoreType, shortCircuitParentDocSet);
         } else {
-            HasChildFilter hasChildFilter = HasChildFilter.create(innerQuery, parentType, childType, searchContext, executionType);
-            searchContext.addRewrite(hasChildFilter);
-            query = new ConstantScoreQuery(hasChildFilter);
+            query = new ChildrenConstantScoreQuery(innerQuery, parentType, childType, parentFilter, shortCircuitParentDocSet, true);
+            if (deleteByQuery) {
+                query = new XConstantScoreQuery(new DeleteByQueryWrappingFilter(query));
+            }
+        }
+        if (queryName != null) {
+            parseContext.addNamedQuery(queryName, query);
         }
         query.setBoost(boost);
         return query;

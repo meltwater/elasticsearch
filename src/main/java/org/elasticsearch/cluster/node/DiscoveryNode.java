@@ -21,6 +21,7 @@ package org.elasticsearch.cluster.node;
 
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
+import org.elasticsearch.ElasticSearchIllegalArgumentException;
 import org.elasticsearch.Version;
 import org.elasticsearch.common.io.stream.StreamInput;
 import org.elasticsearch.common.io.stream.StreamOutput;
@@ -39,6 +40,23 @@ import static org.elasticsearch.common.transport.TransportAddressSerializers.add
  * A discovery node represents a node that is part of the cluster.
  */
 public class DiscoveryNode implements Streamable, Serializable {
+
+    public static boolean localNode(Settings settings) {
+        if (settings.get("node.local") != null) {
+            return settings.getAsBoolean("node.local", false);
+        }
+        if (settings.get("node.mode") != null) {
+            String nodeMode = settings.get("node.mode");
+            if ("local".equals(nodeMode)) {
+                return true;
+            } else if ("network".equals(nodeMode)) {
+                return false;
+            } else {
+                throw new ElasticSearchIllegalArgumentException("unsupported node.mode [" + nodeMode + "]");
+            }
+        }
+        return false;
+    }
 
     public static boolean nodeRequiresLocalStorage(Settings settings) {
         return !(settings.getAsBoolean("node.client", false) || (!settings.getAsBoolean("node.data", true) && !settings.getAsBoolean("node.master", true)));
@@ -67,27 +85,21 @@ public class DiscoveryNode implements Streamable, Serializable {
 
     public static final ImmutableList<DiscoveryNode> EMPTY_LIST = ImmutableList.of();
 
-    private String nodeName = "".intern();
-
+    private String nodeName = "";
     private String nodeId;
-
     private TransportAddress address;
-
     private ImmutableMap<String, String> attributes;
-
     private Version version = Version.CURRENT;
 
-    private DiscoveryNode() {
+    DiscoveryNode() {
     }
 
-    public DiscoveryNode(String nodeId, TransportAddress address) {
-        this("", nodeId, address, ImmutableMap.<String, String>of());
+    public DiscoveryNode(String nodeId, TransportAddress address, Version version) {
+        this("", nodeId, address, ImmutableMap.<String, String>of(), version);
     }
 
-    public DiscoveryNode(String nodeName, String nodeId, TransportAddress address, Map<String, String> attributes) {
-        if (nodeName == null) {
-            this.nodeName = "".intern();
-        } else {
+    public DiscoveryNode(String nodeName, String nodeId, TransportAddress address, Map<String, String> attributes, Version version) {
+        if (nodeName != null) {
             this.nodeName = nodeName.intern();
         }
         ImmutableMap.Builder<String, String> builder = ImmutableMap.builder();
@@ -97,6 +109,7 @@ public class DiscoveryNode implements Streamable, Serializable {
         this.attributes = builder.build();
         this.nodeId = nodeId.intern();
         this.address = address;
+        this.version = version;
     }
 
     /**

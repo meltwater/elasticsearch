@@ -20,7 +20,6 @@
 package org.elasticsearch.cluster.metadata;
 
 import com.google.common.collect.ImmutableMap;
-import com.google.common.collect.ImmutableSet;
 import org.elasticsearch.ElasticSearchIllegalArgumentException;
 import org.elasticsearch.ElasticSearchIllegalStateException;
 import org.elasticsearch.cluster.block.ClusterBlock;
@@ -32,7 +31,6 @@ import org.elasticsearch.common.collect.MapBuilder;
 import org.elasticsearch.common.compress.CompressedString;
 import org.elasticsearch.common.io.stream.StreamInput;
 import org.elasticsearch.common.io.stream.StreamOutput;
-import org.elasticsearch.common.regex.Regex;
 import org.elasticsearch.common.settings.ImmutableSettings;
 import org.elasticsearch.common.settings.Settings;
 import org.elasticsearch.common.settings.loader.SettingsLoader;
@@ -45,15 +43,19 @@ import org.elasticsearch.rest.RestStatus;
 import org.elasticsearch.search.warmer.IndexWarmersMetaData;
 
 import java.io.IOException;
-import java.util.*;
+import java.util.HashMap;
+import java.util.Locale;
+import java.util.Map;
 
-import static org.elasticsearch.cluster.node.DiscoveryNodeFilters.OpType.*;
+import static org.elasticsearch.cluster.node.DiscoveryNodeFilters.OpType.AND;
+import static org.elasticsearch.cluster.node.DiscoveryNodeFilters.OpType.OR;
 import static org.elasticsearch.common.settings.ImmutableSettings.*;
 
 /**
  *
  */
 public class IndexMetaData {
+
 
     public interface Custom {
 
@@ -108,38 +110,10 @@ public class IndexMetaData {
         return factory;
     }
 
-    private static ImmutableSet<String> dynamicSettings = ImmutableSet.<String>builder()
-            .add(IndexMetaData.SETTING_NUMBER_OF_REPLICAS)
-            .add(IndexMetaData.SETTING_AUTO_EXPAND_REPLICAS)
-            .add(IndexMetaData.SETTING_READ_ONLY)
-            .add(IndexMetaData.SETTING_BLOCKS_READ)
-            .add(IndexMetaData.SETTING_BLOCKS_WRITE)
-            .add(IndexMetaData.SETTING_BLOCKS_METADATA)
-            .build();
-
     public static final ClusterBlock INDEX_READ_ONLY_BLOCK = new ClusterBlock(5, "index read-only (api)", false, false, RestStatus.FORBIDDEN, ClusterBlockLevel.WRITE, ClusterBlockLevel.METADATA);
     public static final ClusterBlock INDEX_READ_BLOCK = new ClusterBlock(7, "index read (api)", false, false, RestStatus.FORBIDDEN, ClusterBlockLevel.READ);
     public static final ClusterBlock INDEX_WRITE_BLOCK = new ClusterBlock(8, "index write (api)", false, false, RestStatus.FORBIDDEN, ClusterBlockLevel.WRITE);
     public static final ClusterBlock INDEX_METADATA_BLOCK = new ClusterBlock(9, "index metadata (api)", false, false, RestStatus.FORBIDDEN, ClusterBlockLevel.METADATA);
-
-    public static ImmutableSet<String> dynamicSettings() {
-        return dynamicSettings;
-    }
-
-    public static boolean hasDynamicSetting(String key) {
-        for (String dynamicSetting : dynamicSettings) {
-            if (Regex.simpleMatch(dynamicSetting, key)) {
-                return true;
-            }
-        }
-        return false;
-    }
-
-    public static synchronized void addDynamicSettings(String... settings) {
-        HashSet<String> updatedSettings = new HashSet<String>(dynamicSettings);
-        updatedSettings.addAll(Arrays.asList(settings));
-        dynamicSettings = ImmutableSet.copyOf(updatedSettings);
-    }
 
     public static enum State {
         OPEN((byte) 0),
@@ -182,19 +156,21 @@ public class IndexMetaData {
     public static final String SETTING_BLOCKS_WRITE = "index.blocks.write";
     public static final String SETTING_BLOCKS_METADATA = "index.blocks.metadata";
     public static final String SETTING_VERSION_CREATED = "index.version.created";
+    public static final String SETTING_UUID = "index.uuid";
+    public static final String INDEX_UUID_NA_VALUE = "_na_";
 
     private final String index;
     private final long version;
 
     private final State state;
 
-    private final ImmutableMap<String, AliasMetaData> aliases;
+    private final Map<String, AliasMetaData> aliases;
 
     private final Settings settings;
 
-    private final ImmutableMap<String, MappingMetaData> mappings;
+    private final Map<String, MappingMetaData> mappings;
 
-    private final ImmutableMap<String, Custom> customs;
+    private final Map<String, Custom> customs;
 
     private transient final int totalNumberOfShards;
 
@@ -202,7 +178,7 @@ public class IndexMetaData {
     private final DiscoveryNodeFilters includeFilters;
     private final DiscoveryNodeFilters excludeFilters;
 
-    private IndexMetaData(String index, long version, State state, Settings settings, ImmutableMap<String, MappingMetaData> mappings, ImmutableMap<String, AliasMetaData> aliases, ImmutableMap<String, Custom> customs) {
+    private IndexMetaData(String index, long version, State state, Settings settings, Map<String, MappingMetaData> mappings, Map<String, AliasMetaData> aliases, Map<String, Custom> customs) {
         Preconditions.checkArgument(settings.getAsInt(SETTING_NUMBER_OF_SHARDS, -1) != -1, "must specify numberOfShards for index [" + index + "]");
         Preconditions.checkArgument(settings.getAsInt(SETTING_NUMBER_OF_REPLICAS, -1) != -1, "must specify numberOfReplicas for index [" + index + "]");
         this.index = index;
@@ -241,6 +217,26 @@ public class IndexMetaData {
 
     public String getIndex() {
         return index();
+    }
+
+    public String uuid() {
+        return settings.get(SETTING_UUID, INDEX_UUID_NA_VALUE);
+    }
+
+    public String getUUID() {
+        return uuid();
+    }
+
+    /**
+     * Test whether the current index UUID is the same as the given one. Returns true if either are _na_
+     */
+    public boolean isSameUUID(String otherUUID) {
+        assert otherUUID != null;
+        assert uuid() != null;
+        if (INDEX_UUID_NA_VALUE.equals(otherUUID) || INDEX_UUID_NA_VALUE.equals(uuid())) {
+            return true;
+        }
+        return otherUUID.equals(getUUID());
     }
 
     public long version() {
@@ -291,19 +287,19 @@ public class IndexMetaData {
         return settings();
     }
 
-    public ImmutableMap<String, AliasMetaData> aliases() {
+    public Map<String, AliasMetaData> aliases() {
         return this.aliases;
     }
 
-    public ImmutableMap<String, AliasMetaData> getAliases() {
+    public Map<String, AliasMetaData> getAliases() {
         return aliases();
     }
 
-    public ImmutableMap<String, MappingMetaData> mappings() {
+    public Map<String, MappingMetaData> mappings() {
         return mappings;
     }
 
-    public ImmutableMap<String, MappingMetaData> getMappings() {
+    public Map<String, MappingMetaData> getMappings() {
         return mappings();
     }
 
@@ -328,11 +324,11 @@ public class IndexMetaData {
         return mappings.get(MapperService.DEFAULT_MAPPING);
     }
 
-    public ImmutableMap<String, Custom> customs() {
+    public Map<String, Custom> customs() {
         return this.customs;
     }
 
-    public ImmutableMap<String, Custom> getCustoms() {
+    public Map<String, Custom> getCustoms() {
         return this.customs;
     }
 
@@ -357,16 +353,30 @@ public class IndexMetaData {
 
     @Override
     public boolean equals(Object o) {
-        if (this == o) return true;
-        if (o == null || getClass() != o.getClass()) return false;
+        if (this == o) {
+            return true;
+        }
+        if (o == null || getClass() != o.getClass()) {
+            return false;
+        }
 
         IndexMetaData that = (IndexMetaData) o;
 
-        if (!aliases.equals(that.aliases)) return false;
-        if (!index.equals(that.index)) return false;
-        if (!mappings.equals(that.mappings)) return false;
-        if (!settings.equals(that.settings)) return false;
-        if (state != that.state) return false;
+        if (!aliases.equals(that.aliases)) {
+            return false;
+        }
+        if (!index.equals(that.index)) {
+            return false;
+        }
+        if (!mappings.equals(that.mappings)) {
+            return false;
+        }
+        if (!settings.equals(that.settings)) {
+            return false;
+        }
+        if (state != that.state) {
+            return false;
+        }
 
         return true;
     }
@@ -385,28 +395,18 @@ public class IndexMetaData {
         return new Builder(index);
     }
 
-    public static Builder newIndexMetaDataBuilder(String index) {
-        return new Builder(index);
-    }
-
-    public static Builder newIndexMetaDataBuilder(IndexMetaData indexMetaData) {
+    public static Builder builder(IndexMetaData indexMetaData) {
         return new Builder(indexMetaData);
     }
 
     public static class Builder {
 
         private String index;
-
         private State state = State.OPEN;
-
         private long version = 1;
-
         private Settings settings = ImmutableSettings.Builder.EMPTY_SETTINGS;
-
         private MapBuilder<String, MappingMetaData> mappings = MapBuilder.newMapBuilder();
-
         private MapBuilder<String, AliasMetaData> aliases = MapBuilder.newMapBuilder();
-
         private MapBuilder<String, Custom> customs = MapBuilder.newMapBuilder();
 
         public Builder(String index) {
@@ -535,7 +535,7 @@ public class IndexMetaData {
                     AliasMetaData aliasMd = AliasMetaData.newAliasMetaDataBuilder(alias).build();
                     tmpAliases.put(alias, aliasMd);
                 }
-                tmpAliases.putAll(aliases.immutableMap());
+                tmpAliases.putAll(aliases.map());
                 // Remove index.aliases from settings once they are migrated to the new data structure
                 tmpSettings = ImmutableSettings.settingsBuilder().put(settings).putArray("index.aliases").build();
             }
@@ -548,7 +548,7 @@ public class IndexMetaData {
                 }
             }
 
-            return new IndexMetaData(index, version, state, tmpSettings, mappings.immutableMap(), tmpAliases.immutableMap(), customs.immutableMap());
+            return new IndexMetaData(index, version, state, tmpSettings, mappings.readOnlyMap(), tmpAliases.readOnlyMap(), customs.readOnlyMap());
         }
 
         public static void toXContent(IndexMetaData indexMetaData, XContentBuilder builder, ToXContent.Params params) throws IOException {

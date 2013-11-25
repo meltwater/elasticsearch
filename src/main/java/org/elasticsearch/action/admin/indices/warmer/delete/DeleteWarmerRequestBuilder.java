@@ -20,14 +20,14 @@
 package org.elasticsearch.action.admin.indices.warmer.delete;
 
 import org.elasticsearch.action.ActionListener;
-import org.elasticsearch.action.support.master.MasterNodeOperationRequestBuilder;
+import org.elasticsearch.action.support.master.AcknowledgedRequestBuilder;
 import org.elasticsearch.client.IndicesAdminClient;
 import org.elasticsearch.client.internal.InternalIndicesAdminClient;
 
 /**
  *
  */
-public class DeleteWarmerRequestBuilder extends MasterNodeOperationRequestBuilder<DeleteWarmerRequest, DeleteWarmerResponse, DeleteWarmerRequestBuilder> {
+public class DeleteWarmerRequestBuilder extends AcknowledgedRequestBuilder<DeleteWarmerRequest, DeleteWarmerResponse, DeleteWarmerRequestBuilder> {
 
     public DeleteWarmerRequestBuilder(IndicesAdminClient indicesClient) {
         super((InternalIndicesAdminClient) indicesClient, new DeleteWarmerRequest());

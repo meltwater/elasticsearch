@@ -40,6 +40,7 @@ import org.apache.lucene.analysis.hu.HungarianLightStemFilter;
 import org.apache.lucene.analysis.id.IndonesianStemFilter;
 import org.apache.lucene.analysis.it.ItalianLightStemFilter;
 import org.apache.lucene.analysis.lv.LatvianStemFilter;
+import org.apache.lucene.analysis.no.NorwegianMinimalStemFilter;
 import org.apache.lucene.analysis.pt.PortugueseLightStemFilter;
 import org.apache.lucene.analysis.pt.PortugueseMinimalStemFilter;
 import org.apache.lucene.analysis.pt.PortugueseStemFilter;
@@ -110,6 +111,8 @@ public class StemmerTokenFilterFactory extends AbstractTokenFilterFactory {
             return new LatvianStemFilter(tokenStream);
         } else if ("norwegian".equalsIgnoreCase(language)) {
             return new SnowballFilter(tokenStream, new NorwegianStemmer());
+        } else if ("minimal_norwegian".equalsIgnoreCase(language) || "minimalNorwegian".equals(language)) {
+            return new NorwegianMinimalStemFilter(tokenStream);
         } else if ("porter".equalsIgnoreCase(language)) {
             return new PorterStemFilter(tokenStream);
         } else if ("porter2".equalsIgnoreCase(language)) {
@@ -131,6 +134,9 @@ public class StemmerTokenFilterFactory extends AbstractTokenFilterFactory {
         } else if ("possessive_english".equalsIgnoreCase(language) || "possessiveEnglish".equalsIgnoreCase(language)) {
             return new EnglishPossessiveFilter(version, tokenStream);
         } else if ("light_finish".equalsIgnoreCase(language) || "lightFinish".equalsIgnoreCase(language)) {
+            // leaving this for backward compatibility
+            return new FinnishLightStemFilter(tokenStream);
+        } else if ("light_finnish".equalsIgnoreCase(language) || "lightFinnish".equalsIgnoreCase(language)) {
             return new FinnishLightStemFilter(tokenStream);
         } else if ("light_french".equalsIgnoreCase(language) || "lightFrench".equalsIgnoreCase(language)) {
             return new FrenchLightStemFilter(tokenStream);

@@ -19,8 +19,8 @@
 
 package org.elasticsearch.index.fielddata.ordinals;
 
-import org.elasticsearch.common.RamUsage;
-import org.elasticsearch.index.fielddata.util.IntArrayRef;
+import org.apache.lucene.util.LongsRef;
+import org.apache.lucene.util.RamUsageEstimator;
 
 /**
  * Ordinals that effectively are single valued and map "one to one" to the
@@ -39,18 +39,8 @@ public class DocIdOrdinals implements Ordinals {
     }
 
     @Override
-    public boolean hasSingleArrayBackingStorage() {
-        return false;
-    }
-
-    @Override
-    public Object getBackingStorage() {
-        return null;
-    }
-
-    @Override
     public long getMemorySizeInBytes() {
-        return RamUsage.NUM_BYTES_OBJECT_REF;
+        return RamUsageEstimator.NUM_BYTES_OBJECT_REF;
     }
 
     @Override
@@ -64,8 +54,13 @@ public class DocIdOrdinals implements Ordinals {
     }
 
     @Override
-    public int getNumOrds() {
+    public long getNumOrds() {
         return numDocs;
+    }
+
+    @Override
+    public long getMaxOrd() {
+        return 1L + numDocs;
     }
 
     @Override
@@ -76,8 +71,9 @@ public class DocIdOrdinals implements Ordinals {
     public static class Docs implements Ordinals.Docs {
 
         private final DocIdOrdinals parent;
-        private final IntArrayRef intsScratch = new IntArrayRef(new int[1]);
-        private final SingleValueIter iter = new SingleValueIter();
+        private final LongsRef longsScratch = new LongsRef(new long[1], 0, 1);
+        private int docId = -1;
+        private long currentOrdinal = -1;
 
         public Docs(DocIdOrdinals parent) {
             this.parent = parent;
@@ -94,8 +90,13 @@ public class DocIdOrdinals implements Ordinals {
         }
 
         @Override
-        public int getNumOrds() {
+        public long getNumOrds() {
             return parent.getNumOrds();
+        }
+
+        @Override
+        public long getMaxOrd() {
+            return parent.getMaxOrd();
         }
 
         @Override
@@ -104,24 +105,33 @@ public class DocIdOrdinals implements Ordinals {
         }
 
         @Override
-        public int getOrd(int docId) {
-            return docId + 1;
+        public long getOrd(int docId) {
+            return currentOrdinal = docId + 1;
         }
 
         @Override
-        public IntArrayRef getOrds(int docId) {
-            intsScratch.values[0] = docId + 1;
-            return intsScratch;
+        public LongsRef getOrds(int docId) {
+            longsScratch.longs[0] = currentOrdinal = docId + 1;
+            return longsScratch;
         }
 
         @Override
-        public Iter getIter(int docId) {
-            return iter.reset(docId + 1);
+        public long nextOrd() {
+            assert docId >= 0;
+            currentOrdinal = docId + 1;
+            docId = -1;
+            return currentOrdinal;
         }
 
         @Override
-        public void forEachOrdinalInDoc(int docId, OrdinalInDocProc proc) {
-            proc.onOrdinal(docId, docId + 1);
+        public int setDocument(int docId) {
+            this.docId = docId;
+            return 1;
+        }
+
+        @Override
+        public long currentOrd() {
+            return currentOrdinal;
         }
     }
 }

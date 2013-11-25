@@ -23,11 +23,15 @@ import org.elasticsearch.action.ActionListener;
 import org.elasticsearch.action.get.GetRequest;
 import org.elasticsearch.action.get.GetResponse;
 import org.elasticsearch.client.Client;
+import org.elasticsearch.common.Booleans;
 import org.elasticsearch.common.Strings;
 import org.elasticsearch.common.inject.Inject;
 import org.elasticsearch.common.settings.Settings;
 import org.elasticsearch.common.xcontent.XContentBuilder;
+import org.elasticsearch.index.VersionType;
 import org.elasticsearch.rest.*;
+import org.elasticsearch.rest.action.support.RestActions;
+import org.elasticsearch.search.fetch.source.FetchSourceContext;
 
 import java.io.IOException;
 
@@ -53,8 +57,8 @@ public class RestGetAction extends BaseRestHandler {
         getRequest.listenerThreaded(false);
         getRequest.operationThreaded(true);
         getRequest.refresh(request.paramAsBoolean("refresh", getRequest.refresh()));
+        getRequest.routing(request.param("routing"));  // order is important, set it after routing, so it will set the routing
         getRequest.parent(request.param("parent"));
-        getRequest.routing(request.param("routing"));
         getRequest.preference(request.param("preference"));
         getRequest.realtime(request.paramAsBooleanOptional("realtime", null));
 
@@ -66,6 +70,10 @@ public class RestGetAction extends BaseRestHandler {
             }
         }
 
+        getRequest.version(RestActions.parseVersion(request));
+        getRequest.versionType(VersionType.fromString(request.param("version_type"), getRequest.versionType()));
+
+        getRequest.fetchSourceContext(FetchSourceContext.parseFromRestRequest(request));
 
         client.get(getRequest, new ActionListener<GetResponse>() {
             @Override
@@ -74,12 +82,12 @@ public class RestGetAction extends BaseRestHandler {
                 try {
                     XContentBuilder builder = restContentBuilder(request);
                     response.toXContent(builder, request);
-                    if (!response.exists()) {
+                    if (!response.isExists()) {
                         channel.sendResponse(new XContentRestResponse(request, NOT_FOUND, builder));
                     } else {
                         channel.sendResponse(new XContentRestResponse(request, OK, builder));
                     }
-                } catch (Exception e) {
+                } catch (Throwable e) {
                     onFailure(e);
                 }
             }

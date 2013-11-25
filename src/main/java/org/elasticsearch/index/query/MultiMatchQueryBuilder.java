@@ -19,9 +19,8 @@
 
 package org.elasticsearch.index.query;
 
+import com.carrotsearch.hppc.ObjectFloatOpenHashMap;
 import com.google.common.collect.Lists;
-import gnu.trove.impl.Constants;
-import gnu.trove.map.hash.TObjectFloatHashMap;
 import org.elasticsearch.common.xcontent.XContentBuilder;
 
 import java.io.IOException;
@@ -37,7 +36,7 @@ public class MultiMatchQueryBuilder extends BaseQueryBuilder implements Boostabl
     private final Object text;
 
     private final List<String> fields;
-    private TObjectFloatHashMap<String> fieldsBoosts;
+    private ObjectFloatOpenHashMap<String> fieldsBoosts;
 
     private MatchQueryBuilder.Type type;
 
@@ -63,12 +62,16 @@ public class MultiMatchQueryBuilder extends BaseQueryBuilder implements Boostabl
 
     private Boolean useDisMax;
 
-    private Integer tieBreaker;
+    private Float tieBreaker;
 
     private Boolean lenient;
 
     private Float cutoffFrequency = null;
-    
+
+    private MatchQueryBuilder.ZeroTermsQuery zeroTermsQuery = null;
+
+    private String queryName;
+
     /**
      * Constructs a new text query.
      */
@@ -92,7 +95,7 @@ public class MultiMatchQueryBuilder extends BaseQueryBuilder implements Boostabl
     public MultiMatchQueryBuilder field(String field, float boost) {
         fields.add(field);
         if (fieldsBoosts == null) {
-            fieldsBoosts = new TObjectFloatHashMap<String>(Constants.DEFAULT_CAPACITY, Constants.DEFAULT_LOAD_FACTOR, -1);
+            fieldsBoosts = new ObjectFloatOpenHashMap<String>();
         }
         fieldsBoosts.put(field, boost);
         return this;
@@ -181,7 +184,7 @@ public class MultiMatchQueryBuilder extends BaseQueryBuilder implements Boostabl
         return this;
     }
 
-    public MultiMatchQueryBuilder tieBreaker(Integer tieBreaker) {
+    public MultiMatchQueryBuilder tieBreaker(Float tieBreaker) {
         this.tieBreaker = tieBreaker;
         return this;
     }
@@ -193,8 +196,8 @@ public class MultiMatchQueryBuilder extends BaseQueryBuilder implements Boostabl
         this.lenient = lenient;
         return this;
     }
-    
-    
+
+
     /**
      * Set a cutoff value in [0..1] (or absolute number >=1) representing the
      * maximum threshold of a terms document frequency to be considered a low
@@ -205,6 +208,20 @@ public class MultiMatchQueryBuilder extends BaseQueryBuilder implements Boostabl
         return this;
     }
 
+
+    public MultiMatchQueryBuilder zeroTermsQuery(MatchQueryBuilder.ZeroTermsQuery zeroTermsQuery) {
+        this.zeroTermsQuery = zeroTermsQuery;
+        return this;
+    }
+
+    /**
+     * Sets the query name for the filter that can be used when searching for matched_filters per hit.
+     */
+    public MultiMatchQueryBuilder queryName(String queryName) {
+        this.queryName = queryName;
+        return this;
+    }
+
     @Override
     public void doXContent(XContentBuilder builder, Params params) throws IOException {
         builder.startObject(MultiMatchQueryParser.NAME);
@@ -212,12 +229,8 @@ public class MultiMatchQueryBuilder extends BaseQueryBuilder implements Boostabl
         builder.field("query", text);
         builder.startArray("fields");
         for (String field : fields) {
-            float boost = -1;
-            if (fieldsBoosts != null) {
-                boost = fieldsBoosts.get(field);
-            }
-            if (boost != -1) {
-                field += "^" + boost;
+            if (fieldsBoosts != null && fieldsBoosts.containsKey(field)) {
+                field += "^" + fieldsBoosts.lget();
             }
             builder.value(field);
         }
@@ -268,9 +281,17 @@ public class MultiMatchQueryBuilder extends BaseQueryBuilder implements Boostabl
         if (lenient != null) {
             builder.field("lenient", lenient);
         }
-        
+
         if (cutoffFrequency != null) {
             builder.field("cutoff_frequency", cutoffFrequency);
+        }
+
+        if (zeroTermsQuery != null) {
+            builder.field("zero_terms_query", zeroTermsQuery.toString());
+        }
+
+        if (queryName != null) {
+            builder.field("_name", queryName);
         }
 
         builder.endObject();

@@ -23,6 +23,7 @@ import com.google.common.collect.Lists;
 import com.google.common.collect.Sets;
 import org.apache.lucene.store.IOContext;
 import org.apache.lucene.store.IndexInput;
+import org.apache.lucene.util.IOUtils;
 import org.elasticsearch.ElasticSearchException;
 import org.elasticsearch.cluster.ClusterService;
 import org.elasticsearch.cluster.routing.RoutingNode;
@@ -47,10 +48,10 @@ import org.elasticsearch.indices.IndicesService;
 import org.elasticsearch.threadpool.ThreadPool;
 import org.elasticsearch.transport.*;
 
-import java.io.IOException;
 import java.util.List;
 import java.util.Set;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.atomic.AtomicReference;
 
 /**
@@ -157,9 +158,18 @@ public class RecoverySource extends AbstractComponent {
                     transportService.submitRequest(request.targetNode(), RecoveryTarget.Actions.FILES_INFO, recoveryInfoFilesRequest, TransportRequestOptions.options().withTimeout(internalActionTimeout), EmptyTransportResponseHandler.INSTANCE_SAME).txGet();
 
                     final CountDownLatch latch = new CountDownLatch(response.phase1FileNames.size());
-                    final AtomicReference<Exception> lastException = new AtomicReference<Exception>();
+                    final AtomicReference<Throwable> lastException = new AtomicReference<Throwable>();
+                    int fileIndex = 0;
                     for (final String name : response.phase1FileNames) {
-                        recoverySettings.concurrentStreamPool().execute(new Runnable() {
+                        ThreadPoolExecutor pool;
+                        long fileSize = response.phase1FileSizes.get(fileIndex);
+                        if (fileSize > recoverySettings.SMALL_FILE_CUTOFF_BYTES) {
+                            pool = recoverySettings.concurrentStreamPool();
+                        } else {
+                            pool = recoverySettings.concurrentSmallFileStreamPool();
+                        }
+
+                        pool.execute(new Runnable() {
                             @Override
                             public void run() {
                                 IndexInput indexInput = null;
@@ -190,23 +200,18 @@ public class RecoverySource extends AbstractComponent {
                                         indexInput.readBytes(buf, 0, toRead, false);
                                         BytesArray content = new BytesArray(buf, 0, toRead);
                                         transportService.submitRequest(request.targetNode(), RecoveryTarget.Actions.FILE_CHUNK, new RecoveryFileChunkRequest(request.recoveryId(), request.shardId(), name, position, len, md.checksum(), content),
-                                                TransportRequestOptions.options().withCompress(shouldCompressRequest).withLowType().withTimeout(internalActionTimeout), EmptyTransportResponseHandler.INSTANCE_SAME).txGet();
+                                                TransportRequestOptions.options().withCompress(shouldCompressRequest).withType(TransportRequestOptions.Type.RECOVERY).withTimeout(internalActionTimeout), EmptyTransportResponseHandler.INSTANCE_SAME).txGet();
                                         readCount += toRead;
                                     }
-                                } catch (Exception e) {
+                                } catch (Throwable e) {
                                     lastException.set(e);
                                 } finally {
-                                    if (indexInput != null) {
-                                        try {
-                                            indexInput.close();
-                                        } catch (IOException e) {
-                                            // ignore
-                                        }
-                                    }
+                                    IOUtils.closeWhileHandlingException(indexInput);
                                     latch.countDown();
                                 }
                             }
                         });
+                        fileIndex++;
                     }
 
                     latch.await();
@@ -294,7 +299,7 @@ public class RecoverySource extends AbstractComponent {
                         }
 
                         RecoveryTranslogOperationsRequest translogOperationsRequest = new RecoveryTranslogOperationsRequest(request.recoveryId(), request.shardId(), operations);
-                        transportService.submitRequest(request.targetNode(), RecoveryTarget.Actions.TRANSLOG_OPS, translogOperationsRequest, TransportRequestOptions.options().withCompress(recoverySettings.compress()).withLowType().withTimeout(internalActionLongTimeout), EmptyTransportResponseHandler.INSTANCE_SAME).txGet();
+                        transportService.submitRequest(request.targetNode(), RecoveryTarget.Actions.TRANSLOG_OPS, translogOperationsRequest, TransportRequestOptions.options().withCompress(recoverySettings.compress()).withType(TransportRequestOptions.Type.RECOVERY).withTimeout(internalActionLongTimeout), EmptyTransportResponseHandler.INSTANCE_SAME).txGet();
                         ops = 0;
                         size = 0;
                         operations.clear();
@@ -303,7 +308,7 @@ public class RecoverySource extends AbstractComponent {
                 // send the leftover
                 if (!operations.isEmpty()) {
                     RecoveryTranslogOperationsRequest translogOperationsRequest = new RecoveryTranslogOperationsRequest(request.recoveryId(), request.shardId(), operations);
-                    transportService.submitRequest(request.targetNode(), RecoveryTarget.Actions.TRANSLOG_OPS, translogOperationsRequest, TransportRequestOptions.options().withCompress(recoverySettings.compress()).withLowType().withTimeout(internalActionLongTimeout), EmptyTransportResponseHandler.INSTANCE_SAME).txGet();
+                    transportService.submitRequest(request.targetNode(), RecoveryTarget.Actions.TRANSLOG_OPS, translogOperationsRequest, TransportRequestOptions.options().withCompress(recoverySettings.compress()).withType(TransportRequestOptions.Type.RECOVERY).withTimeout(internalActionLongTimeout), EmptyTransportResponseHandler.INSTANCE_SAME).txGet();
                 }
                 return totalOperations;
             }

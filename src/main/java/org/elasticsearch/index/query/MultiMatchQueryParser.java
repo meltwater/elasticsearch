@@ -21,10 +21,8 @@ package org.elasticsearch.index.query;
 
 import com.google.common.collect.Maps;
 import org.apache.lucene.search.BooleanClause;
-import org.apache.lucene.search.BooleanQuery;
 import org.apache.lucene.search.Query;
 import org.elasticsearch.common.inject.Inject;
-import org.elasticsearch.common.lucene.search.Queries;
 import org.elasticsearch.common.regex.Regex;
 import org.elasticsearch.common.xcontent.XContentParser;
 import org.elasticsearch.index.query.support.QueryParsers;
@@ -62,39 +60,20 @@ public class MultiMatchQueryParser implements QueryParser {
         MultiMatchQuery multiMatchQuery = new MultiMatchQuery(parseContext);
         String minimumShouldMatch = null;
         Map<String, Float> fieldNameWithBoosts = Maps.newHashMap();
+        String queryName = null;
 
         XContentParser.Token token;
         String currentFieldName = null;
         while ((token = parser.nextToken()) != XContentParser.Token.END_OBJECT) {
             if (token == XContentParser.Token.FIELD_NAME) {
                 currentFieldName = parser.currentName();
-            } else if (token == XContentParser.Token.START_ARRAY) {
-                if ("fields".equals(currentFieldName)) {
+            } else if ("fields".equals(currentFieldName)) {
+                if (token == XContentParser.Token.START_ARRAY) {
                     while ((token = parser.nextToken()) != XContentParser.Token.END_ARRAY) {
-                        String fField = null;
-                        Float fBoost = null;
-                        char[] fieldText = parser.textCharacters();
-                        int end = parser.textOffset() + parser.textLength();
-                        for (int i = parser.textOffset(); i < end; i++) {
-                            if (fieldText[i] == '^') {
-                                int relativeLocation = i - parser.textOffset();
-                                fField = new String(fieldText, parser.textOffset(), relativeLocation);
-                                fBoost = Float.parseFloat(new String(fieldText, i + 1, parser.textLength() - relativeLocation - 1));
-                                break;
-                            }
-                        }
-                        if (fField == null) {
-                            fField = parser.text();
-                        }
-
-                        if (Regex.isSimpleMatchPattern(fField)) {
-                            for (String field : parseContext.mapperService().simpleMatchToIndexNames(fField)) {
-                                fieldNameWithBoosts.put(field, fBoost);
-                            }
-                        } else {
-                            fieldNameWithBoosts.put(fField, fBoost);
-                        }
+                        extractFieldAndBoost(parseContext, parser, fieldNameWithBoosts);
                     }
+                } else if (token.isValue()) {
+                    extractFieldAndBoost(parseContext, parser, fieldNameWithBoosts);
                 } else {
                     throw new QueryParsingException(parseContext.index(), "[query_string] query does not support [" + currentFieldName + "]");
                 }
@@ -149,6 +128,17 @@ public class MultiMatchQueryParser implements QueryParser {
                     multiMatchQuery.setCommonTermsCutoff(parser.floatValue());
                 } else if ("lenient".equals(currentFieldName)) {
                     multiMatchQuery.setLenient(parser.booleanValue());
+                } else if ("zero_terms_query".equals(currentFieldName)) {
+                    String zeroTermsDocs = parser.text();
+                    if ("none".equalsIgnoreCase(zeroTermsDocs)) {
+                        multiMatchQuery.setZeroTermsQuery(MatchQuery.ZeroTermsQuery.NONE);
+                    } else if ("all".equalsIgnoreCase(zeroTermsDocs)) {
+                        multiMatchQuery.setZeroTermsQuery(MatchQuery.ZeroTermsQuery.ALL);
+                    } else {
+                        throw new QueryParsingException(parseContext.index(), "Unsupported zero_terms_docs value [" + zeroTermsDocs + "]");
+                    }
+                } else if ("_name".equals(currentFieldName)) {
+                    queryName = parser.text();
                 } else {
                     throw new QueryParsingException(parseContext.index(), "[match] query does not support [" + currentFieldName + "]");
                 }
@@ -163,16 +153,41 @@ public class MultiMatchQueryParser implements QueryParser {
             throw new QueryParsingException(parseContext.index(), "No fields specified for match_all query");
         }
 
-        Query query = multiMatchQuery.parse(type, fieldNameWithBoosts, value);
+        Query query = multiMatchQuery.parse(type, fieldNameWithBoosts, value, minimumShouldMatch);
         if (query == null) {
             return null;
         }
 
-        if (query instanceof BooleanQuery) {
-            Queries.applyMinimumShouldMatch((BooleanQuery) query, minimumShouldMatch);
+        query.setBoost(boost);
+        if (queryName != null) {
+            parseContext.addNamedQuery(queryName, query);
+        }
+        return query;
+    }
+
+    private void extractFieldAndBoost(QueryParseContext parseContext, XContentParser parser, Map<String, Float> fieldNameWithBoosts) throws IOException {
+        String fField = null;
+        Float fBoost = null;
+        char[] fieldText = parser.textCharacters();
+        int end = parser.textOffset() + parser.textLength();
+        for (int i = parser.textOffset(); i < end; i++) {
+            if (fieldText[i] == '^') {
+                int relativeLocation = i - parser.textOffset();
+                fField = new String(fieldText, parser.textOffset(), relativeLocation);
+                fBoost = Float.parseFloat(new String(fieldText, i + 1, parser.textLength() - relativeLocation - 1));
+                break;
+            }
+        }
+        if (fField == null) {
+            fField = parser.text();
         }
 
-        query.setBoost(boost);
-        return query;
+        if (Regex.isSimpleMatchPattern(fField)) {
+            for (String field : parseContext.mapperService().simpleMatchToIndexNames(fField)) {
+                fieldNameWithBoosts.put(field, fBoost);
+            }
+        } else {
+            fieldNameWithBoosts.put(fField, fBoost);
+        }
     }
 }

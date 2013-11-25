@@ -19,18 +19,21 @@
 
 package org.elasticsearch.common.io.stream;
 
-import org.elasticsearch.common.Bytes;
+import org.apache.lucene.util.ArrayUtil;
 import org.elasticsearch.common.bytes.BytesArray;
 import org.elasticsearch.common.bytes.BytesReference;
 import org.elasticsearch.common.io.BytesStream;
 
 import java.io.IOException;
-import java.util.Arrays;
 
 /**
  *
  */
 public class BytesStreamOutput extends StreamOutput implements BytesStream {
+
+    public static final int DEFAULT_SIZE = 2 * 1024;
+
+    public static final int OVERSIZE_LIMIT = 256 * 1024;
 
     /**
      * The buffer where data is stored.
@@ -43,7 +46,7 @@ public class BytesStreamOutput extends StreamOutput implements BytesStream {
     protected int count;
 
     public BytesStreamOutput() {
-        this(1024);
+        this(DEFAULT_SIZE);
     }
 
     public BytesStreamOutput(int size) {
@@ -72,7 +75,7 @@ public class BytesStreamOutput extends StreamOutput implements BytesStream {
     public void writeByte(byte b) throws IOException {
         int newcount = count + 1;
         if (newcount > buf.length) {
-            buf = Arrays.copyOf(buf, Bytes.oversize(newcount, 1));
+            buf = grow(newcount);
         }
         buf[count] = b;
         count = newcount;
@@ -81,7 +84,7 @@ public class BytesStreamOutput extends StreamOutput implements BytesStream {
     public void skip(int length) {
         int newcount = count + length;
         if (newcount > buf.length) {
-            buf = Arrays.copyOf(buf, Bytes.oversize(newcount, 1));
+            buf = grow(newcount);
         }
         count = newcount;
     }
@@ -93,10 +96,18 @@ public class BytesStreamOutput extends StreamOutput implements BytesStream {
         }
         int newcount = count + length;
         if (newcount > buf.length) {
-            buf = Arrays.copyOf(buf, Bytes.oversize(newcount, 1));
+            buf = grow(newcount);
         }
         System.arraycopy(b, offset, buf, count, length);
         count = newcount;
+    }
+
+    private byte[] grow(int newCount) {
+        // try and grow faster while we are small...
+        if (newCount < OVERSIZE_LIMIT) {
+            newCount = Math.max(buf.length << 1, newCount);
+        }
+        return ArrayUtil.grow(buf, newCount);
     }
 
     public void seek(int seekTo) {
@@ -105,6 +116,10 @@ public class BytesStreamOutput extends StreamOutput implements BytesStream {
 
     public void reset() {
         count = 0;
+    }
+
+    public int bufferSize() {
+        return buf.length;
     }
 
     @Override

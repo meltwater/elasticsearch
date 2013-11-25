@@ -21,12 +21,15 @@ package org.elasticsearch.index.query;
 
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.Iterables;
+import org.apache.lucene.queries.TermsFilter;
 import org.apache.lucene.search.ConstantScoreQuery;
 import org.apache.lucene.search.Query;
 import org.apache.lucene.util.BytesRef;
 import org.elasticsearch.common.inject.Inject;
+import org.elasticsearch.common.lucene.search.Queries;
 import org.elasticsearch.common.xcontent.XContentParser;
-import org.elasticsearch.index.search.UidFilter;
+import org.elasticsearch.index.mapper.Uid;
+import org.elasticsearch.index.mapper.internal.UidFieldMapper;
 
 import java.io.IOException;
 import java.util.ArrayList;
@@ -57,12 +60,15 @@ public class IdsQueryParser implements QueryParser {
         Collection<String> types = null;
         String currentFieldName = null;
         float boost = 1.0f;
+        String queryName = null;
         XContentParser.Token token;
+        boolean idsProvided = false;
         while ((token = parser.nextToken()) != XContentParser.Token.END_OBJECT) {
             if (token == XContentParser.Token.FIELD_NAME) {
                 currentFieldName = parser.currentName();
             } else if (token == XContentParser.Token.START_ARRAY) {
                 if ("values".equals(currentFieldName)) {
+                    idsProvided = true;
                     while ((token = parser.nextToken()) != XContentParser.Token.END_ARRAY) {
                         BytesRef value = parser.bytesOrNull();
                         if (value == null) {
@@ -87,14 +93,20 @@ public class IdsQueryParser implements QueryParser {
                     types = ImmutableList.of(parser.text());
                 } else if ("boost".equals(currentFieldName)) {
                     boost = parser.floatValue();
+                } else if ("_name".equals(currentFieldName)) {
+                    queryName = parser.text();
                 } else {
                     throw new QueryParsingException(parseContext.index(), "[ids] query does not support [" + currentFieldName + "]");
                 }
             }
         }
 
-        if (ids.size() == 0) {
+        if (!idsProvided) {
             throw new QueryParsingException(parseContext.index(), "[ids] query, no ids values provided");
+        }
+
+        if (ids.isEmpty()) {
+            return Queries.newMatchNoDocsQuery();
         }
 
         if (types == null || types.isEmpty()) {
@@ -103,10 +115,13 @@ public class IdsQueryParser implements QueryParser {
             types = parseContext.mapperService().types();
         }
 
-        UidFilter filter = new UidFilter(types, ids);
+        TermsFilter filter = new TermsFilter(UidFieldMapper.NAME, Uid.createTypeUids(types, ids));
         // no need for constant score filter, since we don't cache the filter, and it always takes deletes into account
         ConstantScoreQuery query = new ConstantScoreQuery(filter);
         query.setBoost(boost);
+        if (queryName != null) {
+            parseContext.addNamedQuery(queryName, query);
+        }
         return query;
     }
 }

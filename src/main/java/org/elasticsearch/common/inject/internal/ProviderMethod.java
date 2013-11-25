@@ -42,7 +42,7 @@ public class ProviderMethod<T> implements ProviderWithDependencies<T> {
     private final boolean exposed;
 
     /**
-     * @param method the method to invoke. It's return type must be the same type as {@code key}.
+     * @param method the method to invoke. Its return type must be the same type as {@code key}.
      */
     ProviderMethod(Key<T> key, Method method, Object instance,
                    ImmutableSet<Dependency<?>> dependencies, List<Provider<?>> parameterProviders,
@@ -53,7 +53,7 @@ public class ProviderMethod<T> implements ProviderWithDependencies<T> {
         this.dependencies = dependencies;
         this.method = method;
         this.parameterProviders = parameterProviders;
-        this.exposed = method.isAnnotationPresent(Exposed.class);
+        this.exposed = method.getAnnotation(Exposed.class) != null;
 
         method.setAccessible(true);
     }

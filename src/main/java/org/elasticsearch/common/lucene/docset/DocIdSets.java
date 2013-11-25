@@ -33,11 +33,19 @@ import java.io.IOException;
  */
 public class DocIdSets {
 
+    public static long sizeInBytes(DocIdSet docIdSet) {
+        if (docIdSet instanceof FixedBitSet) {
+            return ((FixedBitSet) docIdSet).getBits().length * 8 + 16;
+        }
+        // only for empty ones and unknowns...
+        return 1;
+    }
+
     /**
      * Is it an empty {@link DocIdSet}?
      */
     public static boolean isEmpty(@Nullable DocIdSet set) {
-        return set == null || set == DocIdSet.EMPTY_DOCIDSET;
+        return set == null || set == EMPTY_DOCIDSET;
     }
 
     /**
@@ -62,28 +70,51 @@ public class DocIdSets {
      * <p/>
      * Note, we don't use {@link org.apache.lucene.search.DocIdSet#isCacheable()} because execution
      * might be expensive even if its cacheable (i.e. not going back to the reader to execute). We effectively
-     * always either return {@link DocIdSet#EMPTY_DOCIDSET} or {@link FixedBitSet}.
+     * always either return an empty {@link DocIdSet} or {@link FixedBitSet} but never <code>null</code>.
      */
     public static DocIdSet toCacheable(AtomicReader reader, @Nullable DocIdSet set) throws IOException {
-        if (set == null) {
-            return DocIdSet.EMPTY_DOCIDSET;
-        }
-        if (set == DocIdSet.EMPTY_DOCIDSET) {
-            return DocIdSet.EMPTY_DOCIDSET;
+        if (set == null || set == EMPTY_DOCIDSET) {
+            return EMPTY_DOCIDSET;
         }
         DocIdSetIterator it = set.iterator();
         if (it == null) {
-            return DocIdSet.EMPTY_DOCIDSET;
+            return EMPTY_DOCIDSET;
         }
         int doc = it.nextDoc();
         if (doc == DocIdSetIterator.NO_MORE_DOCS) {
-            return DocIdSet.EMPTY_DOCIDSET;
+            return EMPTY_DOCIDSET;
         }
         if (set instanceof FixedBitSet) {
             return set;
         }
-        return toFixedBitSet(set.iterator(), reader.maxDoc());
+        // TODO: should we use WAH8DocIdSet like Lucene?
+        FixedBitSet fixedBitSet = new FixedBitSet(reader.maxDoc());
+        do {
+            fixedBitSet.set(doc);
+            doc = it.nextDoc();
+        } while (doc != DocIdSetIterator.NO_MORE_DOCS);
+        return fixedBitSet;
     }
+    
+    /** An empty {@code DocIdSet} instance */
+    protected static final DocIdSet EMPTY_DOCIDSET = new DocIdSet() {
+      
+      @Override
+      public DocIdSetIterator iterator() {
+        return DocIdSetIterator.empty();
+      }
+      
+      @Override
+      public boolean isCacheable() {
+        return true;
+      }
+      
+      // we explicitly provide no random access, as this filter is 100% sparse and iterator exits faster
+      @Override
+      public Bits bits() {
+        return null;
+      }
+    };
 
     /**
      * Gets a set to bits.
@@ -100,16 +131,16 @@ public class DocIdSets {
         if (iterator == null) {
             return new Bits.MatchNoBits(reader.maxDoc());
         }
-        return new FixedBitSet(toFixedBitSet(iterator, reader.maxDoc()));
+        return toFixedBitSet(iterator, reader.maxDoc());
     }
 
     /**
      * Creates a {@link FixedBitSet} from an iterator.
      */
-    public static FixedBitSet toFixedBitSet(DocIdSetIterator iteartor, int numBits) throws IOException {
+    public static FixedBitSet toFixedBitSet(DocIdSetIterator iterator, int numBits) throws IOException {
         FixedBitSet set = new FixedBitSet(numBits);
         int doc;
-        while ((doc = iteartor.nextDoc()) != DocIdSetIterator.NO_MORE_DOCS) {
+        while ((doc = iterator.nextDoc()) != DocIdSetIterator.NO_MORE_DOCS) {
             set.set(doc);
         }
         return set;

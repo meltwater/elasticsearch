@@ -19,15 +19,12 @@
 
 package org.elasticsearch.action.update;
 
-import com.google.common.collect.ImmutableList;
 import org.elasticsearch.action.ActionResponse;
 import org.elasticsearch.common.io.stream.StreamInput;
 import org.elasticsearch.common.io.stream.StreamOutput;
 import org.elasticsearch.index.get.GetResult;
 
 import java.io.IOException;
-import java.util.ArrayList;
-import java.util.List;
 
 /**
  */
@@ -37,96 +34,51 @@ public class UpdateResponse extends ActionResponse {
     private String id;
     private String type;
     private long version;
-    private List<String> matches;
+    private boolean created;
     private GetResult getResult;
 
     public UpdateResponse() {
 
     }
 
-    public UpdateResponse(String index, String type, String id, long version) {
+    public UpdateResponse(String index, String type, String id, long version, boolean created) {
         this.index = index;
         this.id = id;
         this.type = type;
         this.version = version;
-    }
-
-    /**
-     * The index the document was indexed into.
-     */
-    public String index() {
-        return this.index;
+        this.created = created;
     }
 
     /**
      * The index the document was indexed into.
      */
     public String getIndex() {
-        return index;
-    }
-
-    /**
-     * The type of the document indexed.
-     */
-    public String type() {
-        return this.type;
+        return this.index;
     }
 
     /**
      * The type of the document indexed.
      */
     public String getType() {
-        return type;
-    }
-
-    /**
-     * The id of the document indexed.
-     */
-    public String id() {
-        return this.id;
+        return this.type;
     }
 
     /**
      * The id of the document indexed.
      */
     public String getId() {
-        return id;
+        return this.id;
     }
 
     /**
-     * Returns the version of the doc indexed.
+     * Returns the current version of the doc indexed.
      */
-    public long version() {
+    public long getVersion() {
         return this.version;
     }
 
-    /**
-     * Returns the version of the doc indexed.
-     */
-    public long getVersion() {
-        return version();
-    }
-
-    /**
-     * Returns the percolate queries matches. <tt>null</tt> if no percolation was requested.
-     */
-    public List<String> matches() {
-        return this.matches;
-    }
-
-    /**
-     * Returns the percolate queries matches. <tt>null</tt> if no percolation was requested.
-     */
-    public List<String> getMatches() {
-        return this.matches;
-    }
-
-    void getResult(GetResult getResult) {
+    public void setGetResult(GetResult getResult) {
         this.getResult = getResult;
-    }
-
-    public GetResult getResult() {
-        return this.getResult;
     }
 
     public GetResult getGetResult() {
@@ -134,40 +86,21 @@ public class UpdateResponse extends ActionResponse {
     }
 
     /**
-     * Internal.
+     * Returns true if document was created due to an UPSERT operation
      */
-    public void matches(List<String> matches) {
-        this.matches = matches;
+    public boolean isCreated() {
+        return this.created;
+
     }
 
     @Override
     public void readFrom(StreamInput in) throws IOException {
         super.readFrom(in);
-        index = in.readString();
+        index = in.readSharedString();
+        type = in.readSharedString();
         id = in.readString();
-        type = in.readString();
         version = in.readLong();
-        if (in.readBoolean()) {
-            int size = in.readVInt();
-            if (size == 0) {
-                matches = ImmutableList.of();
-            } else if (size == 1) {
-                matches = ImmutableList.of(in.readString());
-            } else if (size == 2) {
-                matches = ImmutableList.of(in.readString(), in.readString());
-            } else if (size == 3) {
-                matches = ImmutableList.of(in.readString(), in.readString(), in.readString());
-            } else if (size == 4) {
-                matches = ImmutableList.of(in.readString(), in.readString(), in.readString(), in.readString());
-            } else if (size == 5) {
-                matches = ImmutableList.of(in.readString(), in.readString(), in.readString(), in.readString(), in.readString());
-            } else {
-                matches = new ArrayList<String>();
-                for (int i = 0; i < size; i++) {
-                    matches.add(in.readString());
-                }
-            }
-        }
+        created = in.readBoolean();
         if (in.readBoolean()) {
             getResult = GetResult.readGetResult(in);
         }
@@ -176,19 +109,11 @@ public class UpdateResponse extends ActionResponse {
     @Override
     public void writeTo(StreamOutput out) throws IOException {
         super.writeTo(out);
-        out.writeString(index);
+        out.writeSharedString(index);
+        out.writeSharedString(type);
         out.writeString(id);
-        out.writeString(type);
         out.writeLong(version);
-        if (matches == null) {
-            out.writeBoolean(false);
-        } else {
-            out.writeBoolean(true);
-            out.writeVInt(matches.size());
-            for (String match : matches) {
-                out.writeString(match);
-            }
-        }
+        out.writeBoolean(created);
         if (getResult == null) {
             out.writeBoolean(false);
         } else {

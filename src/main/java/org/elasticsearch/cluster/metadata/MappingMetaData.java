@@ -20,6 +20,7 @@
 package org.elasticsearch.cluster.metadata;
 
 import org.elasticsearch.ElasticSearchIllegalStateException;
+import org.elasticsearch.Version;
 import org.elasticsearch.action.TimestampParsingException;
 import org.elasticsearch.common.Nullable;
 import org.elasticsearch.common.Strings;
@@ -33,6 +34,7 @@ import org.elasticsearch.common.xcontent.XContentFactory;
 import org.elasticsearch.common.xcontent.XContentHelper;
 import org.elasticsearch.common.xcontent.XContentParser;
 import org.elasticsearch.index.mapper.DocumentMapper;
+import org.elasticsearch.index.mapper.MapperParsingException;
 import org.elasticsearch.index.mapper.internal.TimestampFieldMapper;
 
 import java.io.IOException;
@@ -257,6 +259,7 @@ public class MappingMetaData {
     private Id id;
     private Routing routing;
     private Timestamp timestamp;
+    private boolean hasParentField;
 
     public MappingMetaData(DocumentMapper docMapper) {
         this.type = docMapper.type();
@@ -264,6 +267,7 @@ public class MappingMetaData {
         this.id = new Id(docMapper.idFieldMapper().path());
         this.routing = new Routing(docMapper.routingFieldMapper().required(), docMapper.routingFieldMapper().path());
         this.timestamp = new Timestamp(docMapper.timestampFieldMapper().enabled(), docMapper.timestampFieldMapper().path(), docMapper.timestampFieldMapper().dateTimeFormatter().format());
+        this.hasParentField = docMapper.parentFieldMapper().active();
     }
 
     public MappingMetaData(CompressedString mapping) throws IOException {
@@ -343,14 +347,20 @@ public class MappingMetaData {
         } else {
             this.timestamp = Timestamp.EMPTY;
         }
+        if (withoutType.containsKey("_parent")) {
+            this.hasParentField = true;
+        } else {
+            this.hasParentField = false;
+        }
     }
 
-    public MappingMetaData(String type, CompressedString source, Id id, Routing routing, Timestamp timestamp) {
+    public MappingMetaData(String type, CompressedString source, Id id, Routing routing, Timestamp timestamp, boolean hasParentField) {
         this.type = type;
         this.source = source;
         this.id = id;
         this.routing = routing;
         this.timestamp = timestamp;
+        this.hasParentField = hasParentField;
     }
 
     void updateDefaultMapping(MappingMetaData defaultMapping) {
@@ -371,6 +381,10 @@ public class MappingMetaData {
 
     public CompressedString source() {
         return this.source;
+    }
+
+    public boolean hasParentField() {
+        return hasParentField;
     }
 
     /**
@@ -442,6 +456,9 @@ public class MappingMetaData {
             boolean incLocationTimestamp = false;
             if (context.idParsingStillNeeded() && fieldName.equals(idPart)) {
                 if (context.locationId + 1 == id.pathElements().length) {
+                    if (!t.isValue()) {
+                        throw new MapperParsingException("id field must be a value but was either an object or an array");
+                    }
                     context.id = parser.textOrNull();
                     context.idResolved = true;
                 } else {
@@ -512,6 +529,9 @@ public class MappingMetaData {
             out.writeBoolean(false);
         }
         out.writeString(mappingMd.timestamp().format());
+        if (out.getVersion().onOrAfter(Version.V_0_90_6)) {
+            out.writeBoolean(mappingMd.hasParentField());
+        }
     }
 
     @Override
@@ -549,7 +569,13 @@ public class MappingMetaData {
         Routing routing = new Routing(in.readBoolean(), in.readBoolean() ? in.readString() : null);
         // timestamp
         Timestamp timestamp = new Timestamp(in.readBoolean(), in.readBoolean() ? in.readString() : null, in.readString());
-        return new MappingMetaData(type, source, id, routing, timestamp);
+        final boolean hasParentField;
+        if (in.getVersion().onOrAfter(Version.V_0_90_6)) {
+            hasParentField = in.readBoolean();
+        } else {
+            hasParentField = true; // We assume here that the type has a parent field, which is confirm with the behaviour of <= 0.90.5
+        }
+        return new MappingMetaData(type, source, id, routing, timestamp, hasParentField);
     }
 
     public static class ParseContext {

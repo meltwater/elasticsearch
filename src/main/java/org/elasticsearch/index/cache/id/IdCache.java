@@ -21,25 +21,27 @@ package org.elasticsearch.index.cache.id;
 
 import org.apache.lucene.index.AtomicReader;
 import org.apache.lucene.index.AtomicReaderContext;
-import org.apache.lucene.index.IndexReader;
 import org.elasticsearch.common.component.CloseableComponent;
 import org.elasticsearch.index.IndexComponent;
+import org.elasticsearch.index.service.IndexService;
 
+import java.io.IOException;
 import java.util.List;
 
 /**
- *
+ * This id cache contains only the ids of parent documents, loaded via the uid or parent field.
+ * This name IdCache is misleading, parentIdCache would be a better name.
  */
 public interface IdCache extends IndexComponent, CloseableComponent, Iterable<IdReaderCache> {
 
+    // we need to "inject" the index service to not create cyclic dep
+    void setIndexService(IndexService indexService);
+
     void clear();
 
-    void clear(IndexReader reader);
+    void clear(Object coreCacheKey);
 
-    void refresh(List<AtomicReaderContext> readers) throws Exception;
+    void refresh(List<AtomicReaderContext> readers) throws IOException;
 
     IdReaderCache reader(AtomicReader reader);
-
-    long sizeInBytes();
-
 }

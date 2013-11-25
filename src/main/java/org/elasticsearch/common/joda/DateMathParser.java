@@ -20,14 +20,14 @@ public class DateMathParser {
     }
 
     public long parse(String text, long now) {
-        return parse(text, now, false, false);
+        return parse(text, now, false);
     }
 
-    public long parseUpperInclusive(String text, long now) {
-        return parse(text, now, true, true);
+    public long parseRoundCeil(String text, long now) {
+        return parse(text, now, true);
     }
 
-    public long parse(String text, long now, boolean roundUp, boolean upperInclusive) {
+    public long parse(String text, long now, boolean roundCeil) {
         long time;
         String mathString;
         if (text.startsWith("now")) {
@@ -43,8 +43,8 @@ public class DateMathParser {
                 parseString = text.substring(0, index);
                 mathString = text.substring(index + 2);
             }
-            if (upperInclusive) {
-                time = parseUpperInclusiveStringValue(parseString);
+            if (roundCeil) {
+                time = parseRoundCeilStringValue(parseString);
             } else {
                 time = parseStringValue(parseString);
             }
@@ -54,7 +54,7 @@ public class DateMathParser {
             return time;
         }
 
-        return parseMath(mathString, time, roundUp);
+        return parseMath(mathString, time, roundCeil);
     }
 
     private long parseMath(String mathString, long time, boolean roundUp) throws ElasticSearchParseException {
@@ -91,6 +91,19 @@ public class DateMathParser {
                 }
                 char unit = mathString.charAt(i++);
                 switch (unit) {
+                    case 'y':
+                        if (type == 0) {
+                            if (roundUp) {
+                                dateTime.yearOfCentury().roundCeiling();
+                            } else {
+                                dateTime.yearOfCentury().roundFloor();
+                            }
+                        } else if (type == 1) {
+                            dateTime.addYears(num);
+                        } else if (type == 2) {
+                            dateTime.addYears(-num);
+                        }
+                        break;
                     case 'M':
                         if (type == 0) {
                             if (roundUp) {
@@ -196,9 +209,13 @@ public class DateMathParser {
         }
     }
 
-    private long parseUpperInclusiveStringValue(String value) {
+    private long parseRoundCeilStringValue(String value) {
         try {
-            MutableDateTime dateTime = new MutableDateTime(3000, 12, 31, 23, 59, 59, 999, DateTimeZone.UTC);
+            // we create a date time for inclusive upper range, we "include" by default the day level data
+            // so something like 2011-01-01 will include the full first day of 2011.
+            // we also use 1970-01-01 as the base for it so we can handle searches like 10:12:55 (just time)
+            // since when we index those, the base is 1970-01-01
+            MutableDateTime dateTime = new MutableDateTime(1970, 1, 1, 23, 59, 59, 999, DateTimeZone.UTC);
             int location = dateTimeFormatter.parser().parseInto(dateTime, value, 0);
             // if we parsed all the string value, we are good
             if (location == value.length()) {

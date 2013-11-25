@@ -19,6 +19,7 @@
 
 package org.elasticsearch.index.query;
 
+import org.elasticsearch.ElasticSearchIllegalArgumentException;
 import org.elasticsearch.common.xcontent.XContentBuilder;
 
 import java.io.IOException;
@@ -33,6 +34,8 @@ public class SpanNotQueryBuilder extends BaseQueryBuilder implements SpanQueryBu
     private SpanQueryBuilder exclude;
 
     private float boost = -1;
+
+    private String queryName;
 
     public SpanNotQueryBuilder include(SpanQueryBuilder include) {
         this.include = include;
@@ -49,13 +52,21 @@ public class SpanNotQueryBuilder extends BaseQueryBuilder implements SpanQueryBu
         return this;
     }
 
+    /**
+     * Sets the query name for the filter that can be used when searching for matched_filters per hit.
+     */
+    public SpanNotQueryBuilder queryName(String queryName) {
+        this.queryName = queryName;
+        return this;
+    }
+
     @Override
     protected void doXContent(XContentBuilder builder, Params params) throws IOException {
         if (include == null) {
-            throw new QueryBuilderException("Must specify include when using spanNot query");
+            throw new ElasticSearchIllegalArgumentException("Must specify include when using spanNot query");
         }
         if (exclude == null) {
-            throw new QueryBuilderException("Must specify exclude when using spanNot query");
+            throw new ElasticSearchIllegalArgumentException("Must specify exclude when using spanNot query");
         }
         builder.startObject(SpanNotQueryParser.NAME);
         builder.field("include");
@@ -64,6 +75,9 @@ public class SpanNotQueryBuilder extends BaseQueryBuilder implements SpanQueryBu
         exclude.toXContent(builder, params);
         if (boost != -1) {
             builder.field("boost", boost);
+        }
+        if (queryName != null) {
+            builder.field("_name", queryName);
         }
         builder.endObject();
     }

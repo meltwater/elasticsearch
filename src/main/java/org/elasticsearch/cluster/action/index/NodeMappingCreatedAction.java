@@ -20,8 +20,7 @@
 package org.elasticsearch.cluster.action.index;
 
 import org.elasticsearch.ElasticSearchException;
-import org.elasticsearch.cluster.ClusterService;
-import org.elasticsearch.cluster.node.DiscoveryNodes;
+import org.elasticsearch.cluster.ClusterState;
 import org.elasticsearch.common.component.AbstractComponent;
 import org.elasticsearch.common.inject.Inject;
 import org.elasticsearch.common.io.stream.StreamInput;
@@ -41,19 +40,14 @@ import java.util.concurrent.CopyOnWriteArrayList;
 public class NodeMappingCreatedAction extends AbstractComponent {
 
     private final ThreadPool threadPool;
-
     private final TransportService transportService;
-
-    private final ClusterService clusterService;
-
     private final List<Listener> listeners = new CopyOnWriteArrayList<Listener>();
 
     @Inject
-    public NodeMappingCreatedAction(Settings settings, ThreadPool threadPool, TransportService transportService, ClusterService clusterService) {
+    public NodeMappingCreatedAction(Settings settings, ThreadPool threadPool, TransportService transportService) {
         super(settings);
         this.threadPool = threadPool;
         this.transportService = transportService;
-        this.clusterService = clusterService;
         transportService.registerHandler(NodeMappingCreatedTransportHandler.ACTION, new NodeMappingCreatedTransportHandler());
     }
 
@@ -74,9 +68,9 @@ public class NodeMappingCreatedAction extends AbstractComponent {
         listeners.remove(listener);
     }
 
-    public void nodeMappingCreated(final NodeMappingCreatedResponse response) throws ElasticSearchException {
-        DiscoveryNodes nodes = clusterService.state().nodes();
-        if (nodes.localNodeMaster()) {
+    public void nodeMappingCreated(final ClusterState state, final NodeMappingCreatedResponse response) throws ElasticSearchException {
+        logger.debug("Sending mapping created for index {}, type {} (cluster state version: {})", response.index, response.type, response.clusterStateVersion);
+        if (state.nodes().localNodeMaster()) {
             threadPool.generic().execute(new Runnable() {
                 @Override
                 public void run() {
@@ -84,7 +78,7 @@ public class NodeMappingCreatedAction extends AbstractComponent {
                 }
             });
         } else {
-            transportService.sendRequest(clusterService.state().nodes().masterNode(),
+            transportService.sendRequest(state.nodes().masterNode(),
                     NodeMappingCreatedTransportHandler.ACTION, response, EmptyTransportResponseHandler.INSTANCE_SAME);
         }
     }
@@ -128,14 +122,16 @@ public class NodeMappingCreatedAction extends AbstractComponent {
         private String index;
         private String type;
         private String nodeId;
+        private long clusterStateVersion;
 
         private NodeMappingCreatedResponse() {
         }
 
-        public NodeMappingCreatedResponse(String index, String type, String nodeId) {
+        public NodeMappingCreatedResponse(String index, String type, String nodeId, long clusterStateVersion) {
             this.index = index;
             this.type = type;
             this.nodeId = nodeId;
+            this.clusterStateVersion = clusterStateVersion;
         }
 
         public String index() {
@@ -150,12 +146,17 @@ public class NodeMappingCreatedAction extends AbstractComponent {
             return nodeId;
         }
 
+        public long clusterStateVersion() {
+            return clusterStateVersion;
+        }
+
         @Override
         public void writeTo(StreamOutput out) throws IOException {
             super.writeTo(out);
             out.writeString(index);
             out.writeString(type);
             out.writeString(nodeId);
+            out.writeVLong(clusterStateVersion);
         }
 
         @Override
@@ -164,6 +165,7 @@ public class NodeMappingCreatedAction extends AbstractComponent {
             index = in.readString();
             type = in.readString();
             nodeId = in.readString();
+            clusterStateVersion = in.readVLong();
         }
     }
 }

@@ -21,16 +21,19 @@ package org.elasticsearch.index.mapper.core;
 
 import org.apache.lucene.document.Field;
 import org.apache.lucene.document.FieldType;
+import org.apache.lucene.index.FieldInfo.IndexOptions;
+import org.apache.lucene.queries.TermFilter;
 import org.apache.lucene.search.Filter;
 import org.apache.lucene.util.BytesRef;
+import org.elasticsearch.ElasticSearchIllegalArgumentException;
 import org.elasticsearch.common.Booleans;
 import org.elasticsearch.common.Nullable;
 import org.elasticsearch.common.Strings;
 import org.elasticsearch.common.lucene.Lucene;
-import org.elasticsearch.common.lucene.search.TermFilter;
 import org.elasticsearch.common.settings.Settings;
 import org.elasticsearch.common.xcontent.XContentBuilder;
 import org.elasticsearch.common.xcontent.XContentParser;
+import org.elasticsearch.index.codec.docvaluesformat.DocValuesFormatProvider;
 import org.elasticsearch.index.codec.postingsformat.PostingsFormatProvider;
 import org.elasticsearch.index.fielddata.FieldDataType;
 import org.elasticsearch.index.mapper.Mapper;
@@ -39,6 +42,7 @@ import org.elasticsearch.index.mapper.ParseContext;
 import org.elasticsearch.index.similarity.SimilarityProvider;
 
 import java.io.IOException;
+import java.util.List;
 import java.util.Map;
 
 import static org.elasticsearch.common.xcontent.support.XContentMapValues.nodeBooleanValue;
@@ -58,6 +62,8 @@ public class BooleanFieldMapper extends AbstractFieldMapper<Boolean> {
 
         static {
             FIELD_TYPE.setOmitNorms(true);
+            FIELD_TYPE.setIndexOptions(IndexOptions.DOCS_ONLY);
+            FIELD_TYPE.setTokenized(false);
             FIELD_TYPE.freeze();
         }
 
@@ -84,53 +90,16 @@ public class BooleanFieldMapper extends AbstractFieldMapper<Boolean> {
         }
 
         @Override
-        public Builder index(boolean index) {
-            return super.index(index);
-        }
-
-        @Override
-        public Builder store(boolean store) {
-            return super.store(store);
-        }
-
-        @Override
-        protected Builder storeTermVectors(boolean termVectors) {
-            return super.storeTermVectors(termVectors);
-        }
-
-        @Override
-        protected Builder storeTermVectorOffsets(boolean termVectorOffsets) {
-            return super.storeTermVectorOffsets(termVectorOffsets);
-        }
-
-        @Override
-        protected Builder storeTermVectorPositions(boolean termVectorPositions) {
-            return super.storeTermVectorPositions(termVectorPositions);
-        }
-
-        @Override
-        protected Builder storeTermVectorPayloads(boolean termVectorPayloads) {
-            return super.storeTermVectorPayloads(termVectorPayloads);
-        }
-
-        @Override
-        public Builder boost(float boost) {
-            return super.boost(boost);
-        }
-
-        @Override
-        public Builder indexName(String indexName) {
-            return super.indexName(indexName);
-        }
-
-        @Override
-        public Builder similarity(SimilarityProvider similarity) {
-            return super.similarity(similarity);
+        public Builder tokenized(boolean tokenized) {
+            if (tokenized) {
+                throw new ElasticSearchIllegalArgumentException("bool field can't be tokenized");
+            }
+            return super.tokenized(tokenized);
         }
 
         @Override
         public BooleanFieldMapper build(BuilderContext context) {
-            return new BooleanFieldMapper(buildNames(context), boost, fieldType, nullValue, provider, similarity, fieldDataSettings);
+            return new BooleanFieldMapper(buildNames(context), boost, fieldType, nullValue, postingsProvider, docValuesProvider, similarity, fieldDataSettings, context.indexSettings());
         }
     }
 
@@ -152,8 +121,10 @@ public class BooleanFieldMapper extends AbstractFieldMapper<Boolean> {
 
     private Boolean nullValue;
 
-    protected BooleanFieldMapper(Names names, float boost, FieldType fieldType, Boolean nullValue, PostingsFormatProvider provider, SimilarityProvider similarity, @Nullable Settings fieldDataSettings) {
-        super(names, boost, fieldType, Lucene.KEYWORD_ANALYZER, Lucene.KEYWORD_ANALYZER, provider, similarity, fieldDataSettings);
+    protected BooleanFieldMapper(Names names, float boost, FieldType fieldType, Boolean nullValue, PostingsFormatProvider postingsProvider,
+                                 DocValuesFormatProvider docValuesProvider, SimilarityProvider similarity, @Nullable Settings fieldDataSettings,
+                                 Settings indexSettings) {
+        super(names, boost, fieldType, Lucene.KEYWORD_ANALYZER, Lucene.KEYWORD_ANALYZER, postingsProvider, docValuesProvider, similarity, fieldDataSettings, indexSettings);
         this.nullValue = nullValue;
     }
 
@@ -231,9 +202,9 @@ public class BooleanFieldMapper extends AbstractFieldMapper<Boolean> {
     }
 
     @Override
-    protected Field parseCreateField(ParseContext context) throws IOException {
+    protected void parseCreateField(ParseContext context, List<Field> fields) throws IOException {
         if (!fieldType().indexed() && !fieldType().stored()) {
-            return null;
+            return;
         }
         XContentParser.Token token = context.parser().currentToken();
         String value = null;
@@ -245,9 +216,9 @@ public class BooleanFieldMapper extends AbstractFieldMapper<Boolean> {
             value = context.parser().booleanValue() ? "T" : "F";
         }
         if (value == null) {
-            return null;
+            return;
         }
-        return new Field(names.indexName(), value, fieldType);
+        fields.add(new Field(names.indexName(), value, fieldType));
     }
 
     @Override
@@ -256,10 +227,15 @@ public class BooleanFieldMapper extends AbstractFieldMapper<Boolean> {
     }
 
     @Override
-    protected void doXContentBody(XContentBuilder builder) throws IOException {
-        super.doXContentBody(builder);
-        if (nullValue != null) {
+    protected void doXContentBody(XContentBuilder builder, boolean includeDefaults, Params params) throws IOException {
+        super.doXContentBody(builder, includeDefaults, params);
+        if (includeDefaults || nullValue != null) {
             builder.field("null_value", nullValue);
         }
+    }
+
+    @Override
+    public boolean hasDocValues() {
+        return false;
     }
 }

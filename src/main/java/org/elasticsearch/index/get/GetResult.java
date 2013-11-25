@@ -46,21 +46,13 @@ import static org.elasticsearch.index.get.GetField.readGetField;
 public class GetResult implements Streamable, Iterable<GetField>, ToXContent {
 
     private String index;
-
     private String type;
-
     private String id;
-
     private long version;
-
     private boolean exists;
-
     private Map<String, GetField> fields;
-
     private Map<String, Object> sourceAsMap;
-
     private BytesReference source;
-
     private byte[] sourceAsBytes;
 
     GetResult() {
@@ -82,22 +74,8 @@ public class GetResult implements Streamable, Iterable<GetField>, ToXContent {
     /**
      * Does the document exists.
      */
-    public boolean exists() {
-        return exists;
-    }
-
-    /**
-     * Does the document exists.
-     */
     public boolean isExists() {
         return exists;
-    }
-
-    /**
-     * The index the document was fetched from.
-     */
-    public String index() {
-        return this.index;
     }
 
     /**
@@ -110,22 +88,8 @@ public class GetResult implements Streamable, Iterable<GetField>, ToXContent {
     /**
      * The type of the document.
      */
-    public String type() {
-        return type;
-    }
-
-    /**
-     * The type of the document.
-     */
     public String getType() {
         return type;
-    }
-
-    /**
-     * The id of the document.
-     */
-    public String id() {
-        return id;
     }
 
     /**
@@ -138,15 +102,8 @@ public class GetResult implements Streamable, Iterable<GetField>, ToXContent {
     /**
      * The version of the doc.
      */
-    public long version() {
-        return this.version;
-    }
-
-    /**
-     * The version of the doc.
-     */
     public long getVersion() {
-        return this.version;
+        return version;
     }
 
     /**
@@ -224,10 +181,6 @@ public class GetResult implements Streamable, Iterable<GetField>, ToXContent {
         return sourceAsMap();
     }
 
-    public Map<String, GetField> fields() {
-        return this.fields;
-    }
-
     public Map<String, GetField> getFields() {
         return fields;
     }
@@ -263,15 +216,15 @@ public class GetResult implements Streamable, Iterable<GetField>, ToXContent {
         if (fields != null && !fields.isEmpty()) {
             builder.startObject(Fields.FIELDS);
             for (GetField field : fields.values()) {
-                if (field.values().isEmpty()) {
+                if (field.getValues().isEmpty()) {
                     continue;
                 }
-                if (field.values().size() == 1) {
-                    builder.field(field.name(), field.values().get(0));
+                if (field.getValues().size() == 1) {
+                    builder.field(field.getName(), field.getValues().get(0));
                 } else {
-                    builder.field(field.name());
+                    builder.field(field.getName());
                     builder.startArray();
-                    for (Object value : field.values()) {
+                    for (Object value : field.getValues()) {
                         builder.value(value);
                     }
                     builder.endArray();
@@ -284,7 +237,7 @@ public class GetResult implements Streamable, Iterable<GetField>, ToXContent {
 
     @Override
     public XContentBuilder toXContent(XContentBuilder builder, Params params) throws IOException {
-        if (!exists()) {
+        if (!isExists()) {
             builder.startObject();
             builder.field(Fields._INDEX, index);
             builder.field(Fields._TYPE, type);
@@ -314,8 +267,8 @@ public class GetResult implements Streamable, Iterable<GetField>, ToXContent {
 
     @Override
     public void readFrom(StreamInput in) throws IOException {
-        index = in.readString();
-        type = in.readOptionalString();
+        index = in.readSharedString();
+        type = in.readOptionalSharedString();
         id = in.readString();
         version = in.readLong();
         exists = in.readBoolean();
@@ -331,7 +284,7 @@ public class GetResult implements Streamable, Iterable<GetField>, ToXContent {
                 fields = newHashMapWithExpectedSize(size);
                 for (int i = 0; i < size; i++) {
                     GetField field = readGetField(in);
-                    fields.put(field.name(), field);
+                    fields.put(field.getName(), field);
                 }
             }
         }
@@ -339,8 +292,8 @@ public class GetResult implements Streamable, Iterable<GetField>, ToXContent {
 
     @Override
     public void writeTo(StreamOutput out) throws IOException {
-        out.writeString(index);
-        out.writeOptionalString(type);
+        out.writeSharedString(index);
+        out.writeOptionalSharedString(type);
         out.writeString(id);
         out.writeLong(version);
         out.writeBoolean(exists);

@@ -35,7 +35,6 @@ import org.elasticsearch.cluster.block.ClusterBlockException;
 import org.elasticsearch.cluster.block.ClusterBlockLevel;
 import org.elasticsearch.cluster.routing.ShardsIterator;
 import org.elasticsearch.common.inject.Inject;
-import org.elasticsearch.common.io.FastStringReader;
 import org.elasticsearch.common.lucene.Lucene;
 import org.elasticsearch.common.settings.ImmutableSettings;
 import org.elasticsearch.common.settings.Settings;
@@ -124,10 +123,14 @@ public class TransportAnalyzeAction extends TransportSingleCustomOperationAction
             if (indexService == null) {
                 throw new ElasticSearchIllegalArgumentException("No index provided, and trying to analyzer based on a specific field which requires the index parameter");
             }
-            FieldMapper fieldMapper = indexService.mapperService().smartNameFieldMapper(request.field());
+            FieldMapper<?> fieldMapper = indexService.mapperService().smartNameFieldMapper(request.field());
             if (fieldMapper != null) {
+                if (fieldMapper.isNumeric()) {
+                    throw new ElasticSearchIllegalArgumentException("Can't process field [" + request.field() + "], Analysis requests are not supported on numeric fields");
+                }
                 analyzer = fieldMapper.indexAnalyzer();
                 field = fieldMapper.names().indexName();
+                
             }
         }
         if (field == null) {
@@ -198,7 +201,7 @@ public class TransportAnalyzeAction extends TransportSingleCustomOperationAction
         List<AnalyzeResponse.AnalyzeToken> tokens = Lists.newArrayList();
         TokenStream stream = null;
         try {
-            stream = analyzer.tokenStream(field, new FastStringReader(request.text()));
+            stream = analyzer.tokenStream(field, request.text());
             stream.reset();
             CharTermAttribute term = stream.addAttribute(CharTermAttribute.class);
             PositionIncrementAttribute posIncr = stream.addAttribute(PositionIncrementAttribute.class);

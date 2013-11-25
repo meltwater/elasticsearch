@@ -39,15 +39,42 @@ import org.elasticsearch.action.admin.cluster.node.shutdown.NodesShutdownRespons
 import org.elasticsearch.action.admin.cluster.node.stats.NodesStatsRequest;
 import org.elasticsearch.action.admin.cluster.node.stats.NodesStatsRequestBuilder;
 import org.elasticsearch.action.admin.cluster.node.stats.NodesStatsResponse;
+import org.elasticsearch.action.admin.cluster.repositories.delete.DeleteRepositoryRequest;
+import org.elasticsearch.action.admin.cluster.repositories.delete.DeleteRepositoryRequestBuilder;
+import org.elasticsearch.action.admin.cluster.repositories.delete.DeleteRepositoryResponse;
+import org.elasticsearch.action.admin.cluster.repositories.get.GetRepositoriesRequest;
+import org.elasticsearch.action.admin.cluster.repositories.get.GetRepositoriesRequestBuilder;
+import org.elasticsearch.action.admin.cluster.repositories.get.GetRepositoriesResponse;
+import org.elasticsearch.action.admin.cluster.repositories.put.PutRepositoryRequest;
+import org.elasticsearch.action.admin.cluster.repositories.put.PutRepositoryRequestBuilder;
+import org.elasticsearch.action.admin.cluster.repositories.put.PutRepositoryResponse;
 import org.elasticsearch.action.admin.cluster.reroute.ClusterRerouteRequest;
 import org.elasticsearch.action.admin.cluster.reroute.ClusterRerouteRequestBuilder;
 import org.elasticsearch.action.admin.cluster.reroute.ClusterRerouteResponse;
 import org.elasticsearch.action.admin.cluster.settings.ClusterUpdateSettingsRequest;
 import org.elasticsearch.action.admin.cluster.settings.ClusterUpdateSettingsRequestBuilder;
 import org.elasticsearch.action.admin.cluster.settings.ClusterUpdateSettingsResponse;
+import org.elasticsearch.action.admin.cluster.shards.ClusterSearchShardsRequest;
+import org.elasticsearch.action.admin.cluster.shards.ClusterSearchShardsRequestBuilder;
+import org.elasticsearch.action.admin.cluster.shards.ClusterSearchShardsResponse;
+import org.elasticsearch.action.admin.cluster.snapshots.create.CreateSnapshotRequest;
+import org.elasticsearch.action.admin.cluster.snapshots.create.CreateSnapshotRequestBuilder;
+import org.elasticsearch.action.admin.cluster.snapshots.create.CreateSnapshotResponse;
+import org.elasticsearch.action.admin.cluster.snapshots.delete.DeleteSnapshotRequest;
+import org.elasticsearch.action.admin.cluster.snapshots.delete.DeleteSnapshotRequestBuilder;
+import org.elasticsearch.action.admin.cluster.snapshots.delete.DeleteSnapshotResponse;
+import org.elasticsearch.action.admin.cluster.snapshots.get.GetSnapshotsRequest;
+import org.elasticsearch.action.admin.cluster.snapshots.get.GetSnapshotsRequestBuilder;
+import org.elasticsearch.action.admin.cluster.snapshots.get.GetSnapshotsResponse;
+import org.elasticsearch.action.admin.cluster.snapshots.restore.RestoreSnapshotRequest;
+import org.elasticsearch.action.admin.cluster.snapshots.restore.RestoreSnapshotRequestBuilder;
+import org.elasticsearch.action.admin.cluster.snapshots.restore.RestoreSnapshotResponse;
 import org.elasticsearch.action.admin.cluster.state.ClusterStateRequest;
 import org.elasticsearch.action.admin.cluster.state.ClusterStateRequestBuilder;
 import org.elasticsearch.action.admin.cluster.state.ClusterStateResponse;
+import org.elasticsearch.action.admin.cluster.tasks.PendingClusterTasksRequest;
+import org.elasticsearch.action.admin.cluster.tasks.PendingClusterTasksRequestBuilder;
+import org.elasticsearch.action.admin.cluster.tasks.PendingClusterTasksResponse;
 
 /**
  * Administrative actions/operations against indices.
@@ -235,4 +262,148 @@ public interface ClusterAdminClient {
      * Restarts nodes in the cluster.
      */
     NodesRestartRequestBuilder prepareNodesRestart(String... nodesIds);
+
+    /**
+     * Returns list of shards the given search would be executed on.
+     */
+    ActionFuture<ClusterSearchShardsResponse> searchShards(ClusterSearchShardsRequest request);
+
+    /**
+     * Returns list of shards the given search would be executed on.
+     */
+    void searchShards(ClusterSearchShardsRequest request, ActionListener<ClusterSearchShardsResponse> listener);
+
+    /**
+     * Returns list of shards the given search would be executed on.
+     */
+    ClusterSearchShardsRequestBuilder prepareSearchShards();
+
+    /**
+     * Returns list of shards the given search would be executed on.
+     */
+    ClusterSearchShardsRequestBuilder prepareSearchShards(String... indices);
+
+    /**
+     * Registers a snapshot repository.
+     */
+    ActionFuture<PutRepositoryResponse> putRepository(PutRepositoryRequest request);
+
+    /**
+     * Registers a snapshot repository.
+     */
+    void putRepository(PutRepositoryRequest request, ActionListener<PutRepositoryResponse> listener);
+
+    /**
+     * Registers a snapshot repository.
+     */
+    PutRepositoryRequestBuilder preparePutRepository(String name);
+
+    /**
+     * Unregisters a repository.
+     */
+    ActionFuture<DeleteRepositoryResponse> deleteRepository(DeleteRepositoryRequest request);
+
+    /**
+     * Unregisters a repository.
+     */
+    void deleteRepository(DeleteRepositoryRequest request, ActionListener<DeleteRepositoryResponse> listener);
+
+    /**
+     * Unregisters a repository.
+     */
+    DeleteRepositoryRequestBuilder prepareDeleteRepository(String name);
+
+    /**
+     * Gets repositories.
+     */
+    ActionFuture<GetRepositoriesResponse> getRepositories(GetRepositoriesRequest request);
+
+    /**
+     * Gets repositories.
+     */
+    void getRepositories(GetRepositoriesRequest request, ActionListener<GetRepositoriesResponse> listener);
+
+    /**
+     * Gets repositories.
+     */
+    GetRepositoriesRequestBuilder prepareGetRepositories(String... name);
+
+    /**
+     * Creates a new snapshot.
+     */
+    ActionFuture<CreateSnapshotResponse> createSnapshot(CreateSnapshotRequest request);
+
+    /**
+     * Creates a new snapshot.
+     */
+    void createSnapshot(CreateSnapshotRequest request, ActionListener<CreateSnapshotResponse> listener);
+
+    /**
+     * Creates a new snapshot.
+     */
+    CreateSnapshotRequestBuilder prepareCreateSnapshot(String repository, String name);
+
+    /**
+     * Get snapshot.
+     */
+    ActionFuture<GetSnapshotsResponse> getSnapshots(GetSnapshotsRequest request);
+
+    /**
+     * Get snapshot.
+     */
+    void getSnapshots(GetSnapshotsRequest request, ActionListener<GetSnapshotsResponse> listener);
+
+    /**
+     * Get snapshot.
+     */
+    GetSnapshotsRequestBuilder prepareGetSnapshots(String repository);
+
+    /**
+     * Delete snapshot.
+     */
+    ActionFuture<DeleteSnapshotResponse> deleteSnapshot(DeleteSnapshotRequest request);
+
+    /**
+     * Delete snapshot.
+     */
+    void deleteSnapshot(DeleteSnapshotRequest request, ActionListener<DeleteSnapshotResponse> listener);
+
+    /**
+     * Delete snapshot.
+     */
+    DeleteSnapshotRequestBuilder prepareDeleteSnapshot(String repository, String snapshot);
+
+    /**
+     * Restores a snapshot.
+     */
+    ActionFuture<RestoreSnapshotResponse> restoreSnapshot(RestoreSnapshotRequest request);
+
+    /**
+     * Restores a snapshot.
+     */
+    void restoreSnapshot(RestoreSnapshotRequest request, ActionListener<RestoreSnapshotResponse> listener);
+
+    /**
+     * Restores a snapshot.
+     */
+    RestoreSnapshotRequestBuilder prepareRestoreSnapshot(String repository, String snapshot);
+
+    /**
+     * Returns a list of the pending cluster tasks, that are scheduled to be executed. This includes operations
+     * that update the cluster state (for example, a create index operation)
+     */
+    void pendingClusterTasks(PendingClusterTasksRequest request, ActionListener<PendingClusterTasksResponse> listener);
+
+    /**
+     * Returns a list of the pending cluster tasks, that are scheduled to be executed. This includes operations
+     * that update the cluster state (for example, a create index operation)
+     */
+    ActionFuture<PendingClusterTasksResponse> pendingClusterTasks(PendingClusterTasksRequest request);
+
+    /**
+     * Returns a list of the pending cluster tasks, that are scheduled to be executed. This includes operations
+     * that update the cluster state (for example, a create index operation)
+     */
+    PendingClusterTasksRequestBuilder preparePendingClusterTasks();
+
 }

@@ -19,36 +19,35 @@
 
 package org.elasticsearch.indices.cache.filter;
 
+import com.carrotsearch.hppc.ObjectOpenHashSet;
 import com.google.common.base.Objects;
 import com.google.common.cache.Cache;
 import com.google.common.cache.CacheBuilder;
 import com.google.common.cache.RemovalListener;
 import com.google.common.cache.RemovalNotification;
-import com.google.common.collect.ImmutableMap;
-import gnu.trove.set.hash.THashSet;
 import org.apache.lucene.search.DocIdSet;
-import org.elasticsearch.cluster.metadata.MetaData;
-import org.elasticsearch.common.CacheRecycler;
-import org.elasticsearch.common.collect.MapBuilder;
+import org.elasticsearch.cache.recycler.CacheRecycler;
 import org.elasticsearch.common.component.AbstractComponent;
 import org.elasticsearch.common.inject.Inject;
+import org.elasticsearch.common.recycler.Recycler;
 import org.elasticsearch.common.settings.Settings;
 import org.elasticsearch.common.unit.ByteSizeValue;
 import org.elasticsearch.common.unit.TimeValue;
 import org.elasticsearch.common.util.concurrent.ConcurrentCollections;
+import org.elasticsearch.common.util.concurrent.EsRejectedExecutionException;
 import org.elasticsearch.index.cache.filter.weighted.WeightedFilterCache;
 import org.elasticsearch.monitor.jvm.JvmInfo;
 import org.elasticsearch.node.settings.NodeSettingsService;
 import org.elasticsearch.threadpool.ThreadPool;
 
 import java.util.Iterator;
-import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.TimeUnit;
 
 public class IndicesFilterCache extends AbstractComponent implements RemovalListener<WeightedFilterCache.FilterCacheKey, DocIdSet> {
 
     private final ThreadPool threadPool;
+    private final CacheRecycler cacheRecycler;
 
     private Cache<WeightedFilterCache.FilterCacheKey, DocIdSet> cache;
 
@@ -62,28 +61,21 @@ public class IndicesFilterCache extends AbstractComponent implements RemovalList
 
     private volatile boolean closed;
 
-    private volatile Map<String, RemovalListener<WeightedFilterCache.FilterCacheKey, DocIdSet>> removalListeners =
-            ImmutableMap.of();
 
-
-    static {
-        MetaData.addDynamicSettings(
-                "indices.cache.filter.size",
-                "indices.cache.filter.expire"
-        );
-    }
+    public static final String INDICES_CACHE_FILTER_SIZE = "indices.cache.filter.size";
+    public static final String INDICES_CACHE_FILTER_EXPIRE = "indices.cache.filter.expire";
 
     class ApplySettings implements NodeSettingsService.Listener {
         @Override
         public void onRefreshSettings(Settings settings) {
             boolean replace = false;
-            String size = settings.get("indices.cache.filter.size", IndicesFilterCache.this.size);
+            String size = settings.get(INDICES_CACHE_FILTER_SIZE, IndicesFilterCache.this.size);
             if (!size.equals(IndicesFilterCache.this.size)) {
                 logger.info("updating [indices.cache.filter.size] from [{}] to [{}]", IndicesFilterCache.this.size, size);
                 IndicesFilterCache.this.size = size;
                 replace = true;
             }
-            TimeValue expire = settings.getAsTime("indices.cache.filter.expire", IndicesFilterCache.this.expire);
+            TimeValue expire = settings.getAsTime(INDICES_CACHE_FILTER_EXPIRE, IndicesFilterCache.this.expire);
             if (!Objects.equal(expire, IndicesFilterCache.this.expire)) {
                 logger.info("updating [indices.cache.filter.expire] from [{}] to [{}]", IndicesFilterCache.this.expire, expire);
                 IndicesFilterCache.this.expire = expire;
@@ -99,9 +91,10 @@ public class IndicesFilterCache extends AbstractComponent implements RemovalList
     }
 
     @Inject
-    public IndicesFilterCache(Settings settings, ThreadPool threadPool, NodeSettingsService nodeSettingsService) {
+    public IndicesFilterCache(Settings settings, ThreadPool threadPool, CacheRecycler cacheRecycler, NodeSettingsService nodeSettingsService) {
         super(settings);
         this.threadPool = threadPool;
+        this.cacheRecycler = cacheRecycler;
         this.size = componentSettings.get("size", "20%");
         this.expire = componentSettings.getAsTime("expire", null);
         this.cleanInterval = componentSettings.getAsTime("clean_interval", TimeValue.timeValueSeconds(60));
@@ -111,7 +104,6 @@ public class IndicesFilterCache extends AbstractComponent implements RemovalList
                 size, new ByteSizeValue(sizeInBytes), expire, cleanInterval);
 
         nodeSettingsService.addListener(new ApplySettings());
-
         threadPool.schedule(cleanInterval, ThreadPool.Names.SAME, new ReaderCleaner());
     }
 
@@ -139,14 +131,6 @@ public class IndicesFilterCache extends AbstractComponent implements RemovalList
         }
     }
 
-    public synchronized void addRemovalListener(String index, RemovalListener<WeightedFilterCache.FilterCacheKey, DocIdSet> listener) {
-        removalListeners = MapBuilder.newMapBuilder(removalListeners).put(index, listener).immutableMap();
-    }
-
-    public synchronized void removeRemovalListener(String index) {
-        removalListeners = MapBuilder.newMapBuilder(removalListeners).remove(index).immutableMap();
-    }
-
     public void addReaderKeyToClean(Object readerKey) {
         readersKeysToClean.add(readerKey);
     }
@@ -166,14 +150,13 @@ public class IndicesFilterCache extends AbstractComponent implements RemovalList
         if (key == null) {
             return;
         }
-        RemovalListener<WeightedFilterCache.FilterCacheKey, DocIdSet> listener = removalListeners.get(key.index());
-        if (listener != null) {
-            listener.onRemoval(removalNotification);
+        if (key.removalListener != null) {
+            key.removalListener.onRemoval(removalNotification);
         }
     }
 
     /**
-     * The reason we need this class ie because we need to clean all the filters that are associated
+     * The reason we need this class is because we need to clean all the filters that are associated
      * with a reader. We don't want to do it every time a reader closes, since iterating over all the map
      * is expensive. There doesn't seem to be a nicer way to do it (and maintaining a list per reader
      * of the filters will cost more).
@@ -186,34 +169,46 @@ public class IndicesFilterCache extends AbstractComponent implements RemovalList
                 return;
             }
             if (readersKeysToClean.isEmpty()) {
-                threadPool.schedule(cleanInterval, ThreadPool.Names.SAME, this);
+                schedule();
                 return;
             }
-            threadPool.executor(ThreadPool.Names.GENERIC).execute(new Runnable() {
-                @Override
-                public void run() {
-                    THashSet<Object> keys = CacheRecycler.popHashSet();
-                    try {
-                        for (Iterator<Object> it = readersKeysToClean.iterator(); it.hasNext(); ) {
-                            keys.add(it.next());
-                            it.remove();
-                        }
-                        cache.cleanUp();
-                        if (!keys.isEmpty()) {
-                            for (Iterator<WeightedFilterCache.FilterCacheKey> it = cache.asMap().keySet().iterator(); it.hasNext(); ) {
-                                WeightedFilterCache.FilterCacheKey filterCacheKey = it.next();
-                                if (keys.contains(filterCacheKey.readerKey())) {
-                                    // same as invalidate
-                                    it.remove();
+            try {
+                threadPool.executor(ThreadPool.Names.GENERIC).execute(new Runnable() {
+                    @Override
+                    public void run() {
+                        Recycler.V<ObjectOpenHashSet<Object>> keys = cacheRecycler.hashSet(-1);
+                        try {
+                            for (Iterator<Object> it = readersKeysToClean.iterator(); it.hasNext(); ) {
+                                keys.v().add(it.next());
+                                it.remove();
+                            }
+                            cache.cleanUp();
+                            if (!keys.v().isEmpty()) {
+                                for (Iterator<WeightedFilterCache.FilterCacheKey> it = cache.asMap().keySet().iterator(); it.hasNext(); ) {
+                                    WeightedFilterCache.FilterCacheKey filterCacheKey = it.next();
+                                    if (keys.v().contains(filterCacheKey.readerKey())) {
+                                        // same as invalidate
+                                        it.remove();
+                                    }
                                 }
                             }
+                            schedule();
+                        } finally {
+                            keys.release();
                         }
-                        threadPool.schedule(cleanInterval, ThreadPool.Names.SAME, ReaderCleaner.this);
-                    } finally {
-                        CacheRecycler.pushHashSet(keys);
                     }
-                }
-            });
+                });
+            } catch (EsRejectedExecutionException ex) {
+                logger.debug("Can not run ReaderCleaner - execution rejected", ex);
+            } 
+        }
+        
+        private void schedule() {
+            try {
+                threadPool.schedule(cleanInterval, ThreadPool.Names.SAME, this);
+            } catch (EsRejectedExecutionException ex) {
+                logger.debug("Can not schedule ReaderCleaner - execution rejected", ex);
+            }
         }
     }
 }

@@ -19,10 +19,10 @@
 
 package org.elasticsearch.gateway.local;
 
+import com.carrotsearch.hppc.ObjectLongOpenHashMap;
+import com.carrotsearch.hppc.predicates.ObjectPredicate;
 import com.google.common.collect.Maps;
 import com.google.common.collect.Sets;
-import gnu.trove.iterator.TObjectLongIterator;
-import gnu.trove.map.hash.TObjectLongHashMap;
 import org.elasticsearch.ExceptionsHelper;
 import org.elasticsearch.cluster.metadata.IndexMetaData;
 import org.elasticsearch.cluster.node.DiscoveryNode;
@@ -58,9 +58,7 @@ import java.util.concurrent.ConcurrentMap;
  */
 public class LocalGatewayAllocator extends AbstractComponent implements GatewayAllocator {
 
-    static {
-        IndexMetaData.addDynamicSettings("index.recovery.initial_shards");
-    }
+    public static final String INDEX_RECOVERY_INITIAL_SHARDS = "index.recovery.initial_shards";
 
     private final TransportNodesListGatewayStartedShards listGatewayStartedShards;
 
@@ -68,7 +66,7 @@ public class LocalGatewayAllocator extends AbstractComponent implements GatewayA
 
     private final ConcurrentMap<ShardId, Map<DiscoveryNode, TransportNodesListShardStoreMetaData.StoreFilesMetaData>> cachedStores = ConcurrentCollections.newConcurrentMap();
 
-    private final ConcurrentMap<ShardId, TObjectLongHashMap<DiscoveryNode>> cachedShardsState = ConcurrentCollections.newConcurrentMap();
+    private final ConcurrentMap<ShardId, ObjectLongOpenHashMap<DiscoveryNode>> cachedShardsState = ConcurrentCollections.newConcurrentMap();
 
     private final TimeValue listTimeout;
 
@@ -97,9 +95,10 @@ public class LocalGatewayAllocator extends AbstractComponent implements GatewayA
 
     @Override
     public void applyFailedShards(FailedRerouteAllocation allocation) {
-        ShardRouting failedShard = allocation.failedShard();
-        cachedStores.remove(failedShard.shardId());
-        cachedShardsState.remove(failedShard.shardId());
+        for (ShardRouting failedShard : allocation.failedShards()) {
+            cachedStores.remove(failedShard.shardId());
+            cachedShardsState.remove(failedShard.shardId());
+        }
     }
 
     @Override
@@ -122,15 +121,21 @@ public class LocalGatewayAllocator extends AbstractComponent implements GatewayA
                 continue;
             }
 
-            TObjectLongHashMap<DiscoveryNode> nodesState = buildShardStates(nodes, shard);
+            ObjectLongOpenHashMap<DiscoveryNode> nodesState = buildShardStates(nodes, shard);
 
             int numberOfAllocationsFound = 0;
             long highestVersion = -1;
             Set<DiscoveryNode> nodesWithHighestVersion = Sets.newHashSet();
-            for (TObjectLongIterator<DiscoveryNode> it = nodesState.iterator(); it.hasNext(); ) {
-                it.advance();
-                DiscoveryNode node = it.key();
-                long version = it.value();
+            final boolean[] states = nodesState.allocated;
+            final Object[] keys = nodesState.keys;
+            final long[] values = nodesState.values;
+            for (int i = 0; i < states.length; i++) {
+                if (!states[i]) {
+                    continue;
+                }
+
+                DiscoveryNode node = (DiscoveryNode) keys[i];
+                long version = values[i];
                 // since we don't check in NO allocation, we need to double check here
                 if (allocation.shouldIgnoreShardForNode(shard.shardId(), node.id())) {
                     continue;
@@ -156,7 +161,7 @@ public class LocalGatewayAllocator extends AbstractComponent implements GatewayA
             int requiredAllocation = 1;
             try {
                 IndexMetaData indexMetaData = routingNodes.metaData().index(shard.index());
-                String initialShards = indexMetaData.settings().get("index.recovery.initial_shards", settings.get("index.recovery.initial_shards", this.initialShards));
+                String initialShards = indexMetaData.settings().get(INDEX_RECOVERY_INITIAL_SHARDS, settings.get(INDEX_RECOVERY_INITIAL_SHARDS, this.initialShards));
                 if ("quorum".equals(initialShards)) {
                     if (indexMetaData.numberOfReplicas() > 1) {
                         requiredAllocation = ((1 + indexMetaData.numberOfReplicas()) / 2) + 1;
@@ -353,21 +358,21 @@ public class LocalGatewayAllocator extends AbstractComponent implements GatewayA
         return changed;
     }
 
-    private TObjectLongHashMap<DiscoveryNode> buildShardStates(DiscoveryNodes nodes, MutableShardRouting shard) {
-        TObjectLongHashMap<DiscoveryNode> shardStates = cachedShardsState.get(shard.shardId());
+    private ObjectLongOpenHashMap<DiscoveryNode> buildShardStates(final DiscoveryNodes nodes, MutableShardRouting shard) {
+        ObjectLongOpenHashMap<DiscoveryNode> shardStates = cachedShardsState.get(shard.shardId());
         Set<String> nodeIds;
         if (shardStates == null) {
-            shardStates = new TObjectLongHashMap<DiscoveryNode>();
+            shardStates = new ObjectLongOpenHashMap<DiscoveryNode>();
             cachedShardsState.put(shard.shardId(), shardStates);
             nodeIds = nodes.dataNodes().keySet();
         } else {
             // clean nodes that have failed
-            for (TObjectLongIterator<DiscoveryNode> it = shardStates.iterator(); it.hasNext(); ) {
-                it.advance();
-                if (!nodes.nodeExists(it.key().id())) {
-                    it.remove();
+            shardStates.keys().removeAll(new ObjectPredicate<DiscoveryNode>() {
+                @Override
+                public boolean apply(DiscoveryNode node) {
+                    return !nodes.nodeExists(node.id());
                 }
-            }
+            });
             nodeIds = Sets.newHashSet();
             // we have stored cached from before, see if the nodes changed, if they have, go fetch again
             for (DiscoveryNode node : nodes.dataNodes().values()) {
@@ -397,7 +402,7 @@ public class LocalGatewayAllocator extends AbstractComponent implements GatewayA
 
         for (TransportNodesListGatewayStartedShards.NodeLocalGatewayStartedShards nodeShardState : response) {
             // -1 version means it does not exists, which is what the API returns, and what we expect to
-            shardStates.put(nodeShardState.node(), nodeShardState.version());
+            shardStates.put(nodeShardState.getNode(), nodeShardState.version());
         }
         return shardStates;
     }
@@ -444,7 +449,7 @@ public class LocalGatewayAllocator extends AbstractComponent implements GatewayA
 
             for (TransportNodesListShardStoreMetaData.NodeStoreFilesMetaData nodeStoreFilesMetaData : nodesStoreFilesMetaData) {
                 if (nodeStoreFilesMetaData.storeFilesMetaData() != null) {
-                    shardStores.put(nodeStoreFilesMetaData.node(), nodeStoreFilesMetaData.storeFilesMetaData());
+                    shardStores.put(nodeStoreFilesMetaData.getNode(), nodeStoreFilesMetaData.storeFilesMetaData());
                 }
             }
         }

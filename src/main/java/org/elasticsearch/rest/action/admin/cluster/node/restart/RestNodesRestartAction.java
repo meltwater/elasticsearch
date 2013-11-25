@@ -23,11 +23,11 @@ import org.elasticsearch.action.ActionListener;
 import org.elasticsearch.action.admin.cluster.node.restart.NodesRestartRequest;
 import org.elasticsearch.action.admin.cluster.node.restart.NodesRestartResponse;
 import org.elasticsearch.client.Client;
+import org.elasticsearch.common.Strings;
 import org.elasticsearch.common.inject.Inject;
 import org.elasticsearch.common.settings.Settings;
 import org.elasticsearch.common.xcontent.XContentBuilder;
 import org.elasticsearch.rest.*;
-import org.elasticsearch.rest.action.support.RestActions;
 
 import java.io.IOException;
 
@@ -48,7 +48,7 @@ public class RestNodesRestartAction extends BaseRestHandler {
 
     @Override
     public void handleRequest(final RestRequest request, final RestChannel channel) {
-        String[] nodesIds = RestActions.splitNodes(request.param("nodeId"));
+        String[] nodesIds = Strings.splitStringByCommaToArray(request.param("nodeId"));
         NodesRestartRequest nodesRestartRequest = new NodesRestartRequest(nodesIds);
         nodesRestartRequest.listenerThreaded(false);
         nodesRestartRequest.delay(request.paramAsTime("delay", nodesRestartRequest.delay()));
@@ -58,19 +58,19 @@ public class RestNodesRestartAction extends BaseRestHandler {
                 try {
                     XContentBuilder builder = restContentBuilder(request);
                     builder.startObject();
-                    builder.field("cluster_name", result.clusterName().value());
+                    builder.field("cluster_name", result.getClusterName().value());
 
                     builder.startObject("nodes");
                     for (NodesRestartResponse.NodeRestartResponse nodeInfo : result) {
-                        builder.startObject(nodeInfo.node().id());
-                        builder.field("name", nodeInfo.node().name());
+                        builder.startObject(nodeInfo.getNode().id());
+                        builder.field("name", nodeInfo.getNode().name());
                         builder.endObject();
                     }
                     builder.endObject();
 
                     builder.endObject();
                     channel.sendResponse(new XContentRestResponse(request, RestStatus.OK, builder));
-                } catch (Exception e) {
+                } catch (Throwable e) {
                     onFailure(e);
                 }
             }

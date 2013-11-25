@@ -24,6 +24,7 @@ import org.elasticsearch.cluster.*;
 import org.elasticsearch.cluster.node.DiscoveryNode;
 import org.elasticsearch.cluster.routing.allocation.AllocationService;
 import org.elasticsearch.cluster.routing.allocation.RoutingAllocation;
+import org.elasticsearch.common.Priority;
 import org.elasticsearch.common.component.AbstractLifecycleComponent;
 import org.elasticsearch.common.inject.Inject;
 import org.elasticsearch.common.settings.Settings;
@@ -32,7 +33,6 @@ import org.elasticsearch.threadpool.ThreadPool;
 
 import java.util.concurrent.Future;
 
-import static org.elasticsearch.cluster.ClusterState.newClusterStateBuilder;
 import static org.elasticsearch.common.unit.TimeValue.timeValueSeconds;
 
 /**
@@ -138,7 +138,7 @@ public class RoutingService extends AbstractLifecycleComponent<RoutingService> i
             if (lifecycle.stopped()) {
                 return;
             }
-            clusterService.submitStateUpdateTask(CLUSTER_UPDATE_TASK_SOURCE, new ClusterStateUpdateTask() {
+            clusterService.submitStateUpdateTask(CLUSTER_UPDATE_TASK_SOURCE, Priority.HIGH, new ClusterStateUpdateTask() {
                 @Override
                 public ClusterState execute(ClusterState currentState) {
                     RoutingAllocation.Result routingResult = allocationService.reroute(currentState);
@@ -146,7 +146,12 @@ public class RoutingService extends AbstractLifecycleComponent<RoutingService> i
                         // no state changed
                         return currentState;
                     }
-                    return newClusterStateBuilder().state(currentState).routingResult(routingResult).build();
+                    return ClusterState.builder(currentState).routingResult(routingResult).build();
+                }
+
+                @Override
+                public void onFailure(String source, Throwable t) {
+                    logger.error("unexpected failure during [{}]", t, source);
                 }
             });
             routingTableDirty = false;

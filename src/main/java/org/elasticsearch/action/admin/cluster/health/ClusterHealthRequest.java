@@ -21,6 +21,7 @@ package org.elasticsearch.action.admin.cluster.health;
 
 import org.elasticsearch.action.ActionRequestValidationException;
 import org.elasticsearch.action.support.master.MasterNodeOperationRequest;
+import org.elasticsearch.common.Priority;
 import org.elasticsearch.common.Strings;
 import org.elasticsearch.common.io.stream.StreamInput;
 import org.elasticsearch.common.io.stream.StreamOutput;
@@ -37,16 +38,13 @@ import static org.elasticsearch.common.unit.TimeValue.readTimeValue;
 public class ClusterHealthRequest extends MasterNodeOperationRequest<ClusterHealthRequest> {
 
     private String[] indices;
-
     private TimeValue timeout = new TimeValue(30, TimeUnit.SECONDS);
-
     private ClusterHealthStatus waitForStatus;
-
     private int waitForRelocatingShards = -1;
-
     private int waitForActiveShards = -1;
-
     private String waitForNodes = "";
+    private boolean local = false;
+    private Priority waitForEvents = null;
 
     ClusterHealthRequest() {
     }
@@ -77,7 +75,7 @@ public class ClusterHealthRequest extends MasterNodeOperationRequest<ClusterHeal
     }
 
     public ClusterHealthRequest timeout(String timeout) {
-        return timeout(TimeValue.parseTimeValue(timeout, null));
+        return this.timeout(TimeValue.parseTimeValue(timeout, null));
     }
 
     public ClusterHealthStatus waitForStatus() {
@@ -127,6 +125,24 @@ public class ClusterHealthRequest extends MasterNodeOperationRequest<ClusterHeal
         return this;
     }
 
+    public ClusterHealthRequest local(boolean local) {
+        this.local = local;
+        return this;
+    }
+
+    public boolean local() {
+        return this.local;
+    }
+
+    public ClusterHealthRequest waitForEvents(Priority waitForEvents) {
+        this.waitForEvents = waitForEvents;
+        return this;
+    }
+
+    public Priority waitForEvents() {
+        return this.waitForEvents;
+    }
+
     @Override
     public ActionRequestValidationException validate() {
         return null;
@@ -151,6 +167,10 @@ public class ClusterHealthRequest extends MasterNodeOperationRequest<ClusterHeal
         waitForRelocatingShards = in.readInt();
         waitForActiveShards = in.readInt();
         waitForNodes = in.readString();
+        local = in.readBoolean();
+        if (in.readBoolean()) {
+            waitForEvents = Priority.fromByte(in.readByte());
+        }
     }
 
     @Override
@@ -174,5 +194,12 @@ public class ClusterHealthRequest extends MasterNodeOperationRequest<ClusterHeal
         out.writeInt(waitForRelocatingShards);
         out.writeInt(waitForActiveShards);
         out.writeString(waitForNodes);
+        out.writeBoolean(local);
+        if (waitForEvents == null) {
+            out.writeBoolean(false);
+        } else {
+            out.writeBoolean(true);
+            out.writeByte(waitForEvents.value());
+        }
     }
 }

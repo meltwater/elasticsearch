@@ -28,7 +28,7 @@ import java.io.IOException;
  *
  *
  */
-public class RangeQueryBuilder extends BaseQueryBuilder implements BoostableQueryBuilder<RangeQueryBuilder> {
+public class RangeQueryBuilder extends BaseQueryBuilder implements MultiTermQueryBuilder, BoostableQueryBuilder<RangeQueryBuilder> {
 
     private final String name;
 
@@ -41,6 +41,8 @@ public class RangeQueryBuilder extends BaseQueryBuilder implements BoostableQuer
     private boolean includeUpper = true;
 
     private float boost = -1;
+
+    private String queryName;
 
     /**
      * A Query that matches documents within an range of terms.
@@ -388,6 +390,14 @@ public class RangeQueryBuilder extends BaseQueryBuilder implements BoostableQuer
         return this;
     }
 
+    /**
+     * Sets the query name for the filter that can be used when searching for matched_filters per hit.
+     */
+    public RangeQueryBuilder queryName(String queryName) {
+        this.queryName = queryName;
+        return this;
+    }
+
     @Override
     protected void doXContent(XContentBuilder builder, Params params) throws IOException {
         builder.startObject(RangeQueryParser.NAME);
@@ -398,6 +408,9 @@ public class RangeQueryBuilder extends BaseQueryBuilder implements BoostableQuer
         builder.field("include_upper", includeUpper);
         if (boost != -1) {
             builder.field("boost", boost);
+        }
+        if (queryName != null) {
+            builder.field("_name", queryName);
         }
         builder.endObject();
         builder.endObject();

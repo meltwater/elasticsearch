@@ -19,7 +19,7 @@ import static java.lang.Double.longBitsToDouble;
  * this class does extend {@code Number} to allow uniform access by
  * tools and utilities that deal with numerically-based classes.
  *
- * <p><a name="bitEquals">This class compares primitive {@code double}
+ * <p id="bitEquals">This class compares primitive {@code double}
  * values in methods such as {@link #compareAndSet} by comparing their
  * bitwise representation using {@link Double#doubleToRawLongBits},
  * which differs from both the primitive double {@code ==} operator
@@ -123,11 +123,10 @@ public class AtomicDouble extends Number implements java.io.Serializable {
      * if the current value is <a href="#bitEquals">bitwise equal</a>
      * to the expected value.
      *
-     * <p>May <a
+     * <p><a
      * href="http://download.oracle.com/javase/7/docs/api/java/util/concurrent/atomic/package-summary.html#Spurious">
-     * fail spuriously</a>
-     * and does not provide ordering guarantees, so is only rarely an
-     * appropriate alternative to {@code compareAndSet}.
+     * May fail spuriously and does not provide ordering guarantees</a>,
+     * so is only rarely an appropriate alternative to {@code compareAndSet}.
      *
      * @param expect the expected value
      * @param update the new value
@@ -253,21 +252,23 @@ public class AtomicDouble extends Number implements java.io.Serializable {
     private static sun.misc.Unsafe getUnsafe() {
         try {
             return sun.misc.Unsafe.getUnsafe();
-        } catch (SecurityException se) {
-            try {
-                return java.security.AccessController.doPrivileged
-                    (new java.security
-                     .PrivilegedExceptionAction<sun.misc.Unsafe>() {
-                        public sun.misc.Unsafe run() throws Exception {
-                            java.lang.reflect.Field f = sun.misc
-                                .Unsafe.class.getDeclaredField("theUnsafe");
-                            f.setAccessible(true);
-                            return (sun.misc.Unsafe) f.get(null);
-                        }});
-            } catch (java.security.PrivilegedActionException e) {
-                throw new RuntimeException("Could not initialize intrinsics",
-                                           e.getCause());
-            }
+        } catch (SecurityException tryReflectionInstead) {}
+        try {
+            return java.security.AccessController.doPrivileged
+            (new java.security.PrivilegedExceptionAction<sun.misc.Unsafe>() {
+                public sun.misc.Unsafe run() throws Exception {
+                    Class<sun.misc.Unsafe> k = sun.misc.Unsafe.class;
+                    for (java.lang.reflect.Field f : k.getDeclaredFields()) {
+                        f.setAccessible(true);
+                        Object x = f.get(null);
+                        if (k.isInstance(x))
+                            return k.cast(x);
+                    }
+                    throw new NoSuchFieldError("the Unsafe");
+                }});
+        } catch (java.security.PrivilegedActionException e) {
+            throw new RuntimeException("Could not initialize intrinsics",
+                                       e.getCause());
         }
     }
 }

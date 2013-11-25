@@ -19,8 +19,12 @@
 
 package org.elasticsearch.index.query;
 
-import com.spatial4j.core.shape.Shape;
 import org.elasticsearch.common.Nullable;
+import org.elasticsearch.common.geo.builders.ShapeBuilder;
+import org.elasticsearch.index.query.functionscore.FunctionScoreQueryBuilder;
+import org.elasticsearch.index.query.functionscore.ScoreFunctionBuilder;
+
+import java.util.Collection;
 
 /**
  * A static factory for simple "import static" usage.
@@ -249,6 +253,16 @@ public abstract class QueryBuilders {
     }
 
     /**
+     * A Query that matches documents using fuzzy query.
+     *
+     * @param name  The name of the field
+     * @param value The value of the term
+     */
+    public static FuzzyQueryBuilder fuzzyQuery(String name, Object value) {
+        return new FuzzyQueryBuilder(name, value);
+    }
+
+    /**
      * A query that executes the query string against a field. It is a simplified
      * version of {@link QueryStringQueryBuilder} that simply runs against
      * a single field.
@@ -440,6 +454,20 @@ public abstract class QueryBuilders {
     public static SpanOrQueryBuilder spanOrQuery() {
         return new SpanOrQueryBuilder();
     }
+    
+    /**
+     * Creates a {@link SpanQueryBuilder} which allows having a sub query
+     * which implements {@link MultiTermQueryBuilder}. This is useful for
+     * having e.g. wildcard or fuzzy queries inside spans.
+     * 
+     * @param multiTermQueryBuilder The {@link MultiTermQueryBuilder} that 
+     * backs the created builder.
+     * @return
+     */
+    
+    public static SpanMultiTermQueryBuilder spanMultiTermQueryBuilder(MultiTermQueryBuilder multiTermQueryBuilder){
+		return new SpanMultiTermQueryBuilder(multiTermQueryBuilder);
+    }
 
     public static FieldMaskingSpanQueryBuilder fieldMaskingSpanQuery(SpanQueryBuilder query, String field) {
         return new FieldMaskingSpanQueryBuilder(query, field);
@@ -490,6 +518,7 @@ public abstract class QueryBuilders {
      * A query that simply applies the boost fact to the wrapped query (multiplies it).
      *
      * @param queryBuilder The query to apply the boost factor to.
+     * @deprecated use {@link #functionScoreQuery(QueryBuilder)} instead
      */
     public static CustomBoostFactorQueryBuilder customBoostFactorQuery(QueryBuilder queryBuilder) {
         return new CustomBoostFactorQueryBuilder(queryBuilder);
@@ -499,15 +528,84 @@ public abstract class QueryBuilders {
      * A query that allows to define a custom scoring script.
      *
      * @param queryBuilder The query to custom score
+     * @deprecated use {@link #functionScoreQuery(QueryBuilder)} instead
      */
     public static CustomScoreQueryBuilder customScoreQuery(QueryBuilder queryBuilder) {
         return new CustomScoreQueryBuilder(queryBuilder);
     }
 
+    /**
+     * A query that allows to define a custom scoring script, that defines the score for each document that match
+     * with the specified filter.
+     *
+     * @param filterBuilder The filter that defines which documents are scored by a script.
+     * @deprecated use {@link #functionScoreQuery(QueryBuilder)} instead
+     */
+    public static CustomScoreQueryBuilder customScoreQuery(FilterBuilder filterBuilder) {
+        return new CustomScoreQueryBuilder(filterBuilder);
+    }
+    
+    /** 
+     * @deprecated use {@link #functionScoreQuery(QueryBuilder)} instead
+     */
     public static CustomFiltersScoreQueryBuilder customFiltersScoreQuery(QueryBuilder queryBuilder) {
         return new CustomFiltersScoreQueryBuilder(queryBuilder);
     }
 
+    /**
+     * A query that allows to define a custom scoring function.
+     *
+     * @param queryBuilder The query to custom score
+     */
+    public static FunctionScoreQueryBuilder functionScoreQuery(QueryBuilder queryBuilder) {
+        return new FunctionScoreQueryBuilder(queryBuilder);
+    }
+    
+    /**
+     * A query that allows to define a custom scoring function.
+     * 
+     */
+    public static FunctionScoreQueryBuilder functionScoreQuery() {
+        return new FunctionScoreQueryBuilder();
+    }
+    
+    /**
+     * A query that allows to define a custom scoring function.
+     *
+     * @param function The function builder used to custom score
+     */
+    public static FunctionScoreQueryBuilder functionScoreQuery(ScoreFunctionBuilder function) {
+        return new FunctionScoreQueryBuilder(function);
+    }
+    
+    /**
+     * A query that allows to define a custom scoring function.
+     *
+     * @param queryBuilder The query to custom score
+     * @param function The function builder used to custom score
+     */
+    public static FunctionScoreQueryBuilder functionScoreQuery(QueryBuilder queryBuilder, ScoreFunctionBuilder function) {
+        return (new FunctionScoreQueryBuilder(queryBuilder)).add(function);
+    }
+    
+    /**
+     * A query that allows to define a custom scoring function.
+     *
+     * @param filterBuilder The query to custom score
+     * @param function The function builder used to custom score
+     */
+    public static FunctionScoreQueryBuilder functionScoreQuery(FilterBuilder filterBuilder, ScoreFunctionBuilder function) {
+        return (new FunctionScoreQueryBuilder(filterBuilder)).add(function);
+    }
+    
+    /**
+     * A query that allows to define a custom scoring function.
+     *
+     * @param filterBuilder The filterBuilder to custom score
+     */
+    public static FunctionScoreQueryBuilder functionScoreQuery(FilterBuilder filterBuilder) {
+        return new FunctionScoreQueryBuilder(filterBuilder);
+    }
     /**
      * A more like this query that finds documents that are "like" the provided {@link MoreLikeThisQueryBuilder#likeText(String)}
      * which is checked against the fields the query is constructed with.
@@ -667,6 +765,16 @@ public abstract class QueryBuilders {
      * @param name   The field name
      * @param values The terms
      */
+    public static TermsQueryBuilder termsQuery(String name, Collection<?> values) {
+        return new TermsQueryBuilder(name, values);
+    }
+
+    /**
+     * A filer for a field based on several terms matching on any of them.
+     *
+     * @param name   The field name
+     * @param values The terms
+     */
     public static TermsQueryBuilder inQuery(String name, String... values) {
         return new TermsQueryBuilder(name, values);
     }
@@ -722,6 +830,16 @@ public abstract class QueryBuilders {
     }
 
     /**
+     * A filer for a field based on several terms matching on any of them.
+     *
+     * @param name   The field name
+     * @param values The terms
+     */
+    public static TermsQueryBuilder inQuery(String name, Collection<?> values) {
+        return new TermsQueryBuilder(name, values);
+    }
+
+    /**
      * A query that will execute the wrapped query only for the specified indices, and "match_all" when
      * it does not match those indices.
      */
@@ -750,7 +868,7 @@ public abstract class QueryBuilders {
      * @param name The shape field name
      * @param shape Shape to use in the Query
      */
-    public static GeoShapeQueryBuilder geoShapeQuery(String name, Shape shape) {
+    public static GeoShapeQueryBuilder geoShapeQuery(String name, ShapeBuilder shape) {
         return new GeoShapeQueryBuilder(name, shape);
     }
 

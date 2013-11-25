@@ -31,12 +31,14 @@ import java.io.IOException;
  */
 public class LongValuesComparatorSource extends IndexFieldData.XFieldComparatorSource {
 
-    private final IndexNumericFieldData indexFieldData;
+    private final IndexNumericFieldData<?> indexFieldData;
     private final Object missingValue;
+    private final SortMode sortMode;
 
-    public LongValuesComparatorSource(IndexNumericFieldData indexFieldData, @Nullable Object missingValue) {
+    public LongValuesComparatorSource(IndexNumericFieldData<?> indexFieldData, @Nullable Object missingValue, SortMode sortMode) {
         this.indexFieldData = indexFieldData;
         this.missingValue = missingValue;
+        this.sortMode = sortMode;
     }
 
     @Override
@@ -48,15 +50,7 @@ public class LongValuesComparatorSource extends IndexFieldData.XFieldComparatorS
     public FieldComparator<?> newComparator(String fieldname, int numHits, int sortPos, boolean reversed) throws IOException {
         assert fieldname.equals(indexFieldData.getFieldNames().indexName());
 
-        long dMissingValue;
-        if (missingValue == null || "_last".equals(missingValue)) {
-            dMissingValue = reversed ? Long.MIN_VALUE : Long.MAX_VALUE;
-        } else if ("_first".equals(missingValue)) {
-            dMissingValue = reversed ? Long.MAX_VALUE : Long.MIN_VALUE;
-        } else {
-            dMissingValue = missingValue instanceof Number ? ((Number) missingValue).longValue() : Long.parseLong(missingValue.toString());
-        }
-
-        return new LongValuesComparator(indexFieldData, dMissingValue, numHits);
+        final long dMissingValue = (Long) missingObject(missingValue, reversed);
+        return new LongValuesComparator(indexFieldData, dMissingValue, numHits, sortMode);
     }
 }

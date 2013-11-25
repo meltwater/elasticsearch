@@ -19,7 +19,7 @@
 
 package org.elasticsearch.cluster.routing.allocation.allocator;
 
-import gnu.trove.map.hash.TObjectIntHashMap;
+import com.carrotsearch.hppc.ObjectIntOpenHashMap;
 import org.elasticsearch.cluster.routing.MutableShardRouting;
 import org.elasticsearch.cluster.routing.RoutingNode;
 import org.elasticsearch.cluster.routing.RoutingNodes;
@@ -174,7 +174,7 @@ public class EvenShardsCountAllocator extends AbstractComponent implements Shard
                     if (allocateDecision.type() == Decision.Type.YES) {
                         changed = true;
                         lowRoutingNode.add(new MutableShardRouting(startedShard.index(), startedShard.id(),
-                                lowRoutingNode.nodeId(), startedShard.currentNodeId(),
+                                lowRoutingNode.nodeId(), startedShard.currentNodeId(), startedShard.restoreSource(),
                                 startedShard.primary(), INITIALIZING, startedShard.version() + 1));
 
                         startedShard.relocate(lowRoutingNode.nodeId());
@@ -211,7 +211,7 @@ public class EvenShardsCountAllocator extends AbstractComponent implements Shard
             Decision decision = allocation.deciders().canAllocate(shardRouting, nodeToCheck, allocation);
             if (decision.type() == Decision.Type.YES) {
                 nodeToCheck.add(new MutableShardRouting(shardRouting.index(), shardRouting.id(),
-                        nodeToCheck.nodeId(), shardRouting.currentNodeId(),
+                        nodeToCheck.nodeId(), shardRouting.currentNodeId(), shardRouting.restoreSource(),
                         shardRouting.primary(), INITIALIZING, shardRouting.version() + 1));
 
                 shardRouting.relocate(nodeToCheck.nodeId());
@@ -225,12 +225,12 @@ public class EvenShardsCountAllocator extends AbstractComponent implements Shard
 
     private RoutingNode[] sortedNodesLeastToHigh(RoutingAllocation allocation) {
         // create count per node id, taking into account relocations
-        final TObjectIntHashMap<String> nodeCounts = new TObjectIntHashMap<String>();
+        final ObjectIntOpenHashMap<String> nodeCounts = new ObjectIntOpenHashMap<String>();
         for (RoutingNode node : allocation.routingNodes()) {
             for (int i = 0; i < node.shards().size(); i++) {
                 ShardRouting shardRouting = node.shards().get(i);
                 String nodeId = shardRouting.relocating() ? shardRouting.relocatingNodeId() : shardRouting.currentNodeId();
-                nodeCounts.adjustOrPutValue(nodeId, 1, 1);
+                nodeCounts.addTo(nodeId, 1);
             }
         }
         RoutingNode[] nodes = allocation.routingNodes().nodesToShards().values().toArray(new RoutingNode[allocation.routingNodes().nodesToShards().values().size()]);

@@ -19,6 +19,8 @@
 
 package org.elasticsearch.index.fielddata;
 
+import com.carrotsearch.hppc.ObjectLongOpenHashMap;
+import org.elasticsearch.common.Nullable;
 import org.elasticsearch.common.io.stream.StreamInput;
 import org.elasticsearch.common.io.stream.StreamOutput;
 import org.elasticsearch.common.io.stream.Streamable;
@@ -34,17 +36,34 @@ import java.io.IOException;
 public class FieldDataStats implements Streamable, ToXContent {
 
     long memorySize;
+    long evictions;
+    @Nullable
+    ObjectLongOpenHashMap<String> fields;
 
     public FieldDataStats() {
 
     }
 
-    public FieldDataStats(long memorySize) {
+    public FieldDataStats(long memorySize, long evictions, @Nullable ObjectLongOpenHashMap<String> fields) {
         this.memorySize = memorySize;
+        this.evictions = evictions;
+        this.fields = fields;
     }
 
     public void add(FieldDataStats stats) {
         this.memorySize += stats.memorySize;
+        this.evictions += stats.evictions;
+        if (stats.fields != null) {
+            if (fields == null) fields = new ObjectLongOpenHashMap<String>();
+            final boolean[] states = stats.fields.allocated;
+            final Object[] keys = stats.fields.keys;
+            final long[] values = stats.fields.values;
+            for (int i = 0; i < states.length; i++) {
+                if (states[i]) {
+                    fields.addTo((String) keys[i], values[i]);
+                }
+            }
+        }
     }
 
     public long getMemorySizeInBytes() {
@@ -53,6 +72,15 @@ public class FieldDataStats implements Streamable, ToXContent {
 
     public ByteSizeValue getMemorySize() {
         return new ByteSizeValue(memorySize);
+    }
+
+    public long getEvictions() {
+        return this.evictions;
+    }
+
+    @Nullable
+    public ObjectLongOpenHashMap<String> getFields() {
+        return fields;
     }
 
     public static FieldDataStats readFieldDataStats(StreamInput in) throws IOException {
@@ -64,25 +92,65 @@ public class FieldDataStats implements Streamable, ToXContent {
     @Override
     public void readFrom(StreamInput in) throws IOException {
         memorySize = in.readVLong();
+        evictions = in.readVLong();
+        if (in.readBoolean()) {
+            int size = in.readVInt();
+            fields = new ObjectLongOpenHashMap<String>(size);
+            for (int i = 0; i < size; i++) {
+                fields.put(in.readString(), in.readVLong());
+            }
+        }
     }
 
     @Override
     public void writeTo(StreamOutput out) throws IOException {
         out.writeVLong(memorySize);
+        out.writeVLong(evictions);
+        if (fields == null) {
+            out.writeBoolean(false);
+        } else {
+            out.writeBoolean(true);
+            out.writeVInt(fields.size());
+            final boolean[] states = fields.allocated;
+            final Object[] keys = fields.keys;
+            final long[] values = fields.values;
+            for (int i = 0; i < states.length; i++) {
+                if (states[i]) {
+                    out.writeString((String) keys[i]);
+                    out.writeVLong(values[i]);
+                }
+            }
+        }
     }
 
     @Override
     public XContentBuilder toXContent(XContentBuilder builder, Params params) throws IOException {
-        builder.startObject(Fields.FIELD_DATA);
-        builder.field(Fields.MEMORY_SIZE, memorySize);
-        builder.field(Fields.MEMORY_SIZE_IN_BYTES, getMemorySize().toString());
+        builder.startObject(Fields.FIELDDATA);
+        builder.byteSizeField(Fields.MEMORY_SIZE_IN_BYTES, Fields.MEMORY_SIZE, memorySize);
+        builder.field(Fields.EVICTIONS, getEvictions());
+        if (fields != null) {
+            builder.startObject(Fields.FIELDS);
+            final boolean[] states = fields.allocated;
+            final Object[] keys = fields.keys;
+            final long[] values = fields.values;
+            for (int i = 0; i < states.length; i++) {
+                if (states[i]) {
+                    builder.startObject((String) keys[i], XContentBuilder.FieldCaseConversion.NONE);
+                    builder.byteSizeField(Fields.MEMORY_SIZE_IN_BYTES, Fields.MEMORY_SIZE, values[i]);
+                    builder.endObject();
+                }
+            }
+            builder.endObject();
+        }
         builder.endObject();
         return builder;
     }
 
     static final class Fields {
-        static final XContentBuilderString FIELD_DATA = new XContentBuilderString("field_data");
+        static final XContentBuilderString FIELDDATA = new XContentBuilderString("fielddata");
         static final XContentBuilderString MEMORY_SIZE = new XContentBuilderString("memory_size");
         static final XContentBuilderString MEMORY_SIZE_IN_BYTES = new XContentBuilderString("memory_size_in_bytes");
+        static final XContentBuilderString EVICTIONS = new XContentBuilderString("evictions");
+        static final XContentBuilderString FIELDS = new XContentBuilderString("fields");
     }
 }

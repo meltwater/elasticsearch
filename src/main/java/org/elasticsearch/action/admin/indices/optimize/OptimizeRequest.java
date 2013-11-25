@@ -19,8 +19,8 @@
 
 package org.elasticsearch.action.admin.indices.optimize;
 
+import org.elasticsearch.Version;
 import org.elasticsearch.action.support.broadcast.BroadcastOperationRequest;
-import org.elasticsearch.action.support.broadcast.BroadcastOperationThreading;
 import org.elasticsearch.common.io.stream.StreamInput;
 import org.elasticsearch.common.io.stream.StreamOutput;
 
@@ -47,18 +47,12 @@ public class OptimizeRequest extends BroadcastOperationRequest<OptimizeRequest> 
         public static final int MAX_NUM_SEGMENTS = -1;
         public static final boolean ONLY_EXPUNGE_DELETES = false;
         public static final boolean FLUSH = true;
-        public static final boolean REFRESH = true;
     }
 
     private boolean waitForMerge = Defaults.WAIT_FOR_MERGE;
-
     private int maxNumSegments = Defaults.MAX_NUM_SEGMENTS;
-
     private boolean onlyExpungeDeletes = Defaults.ONLY_EXPUNGE_DELETES;
-
     private boolean flush = Defaults.FLUSH;
-
-    private boolean refresh = Defaults.FLUSH;
 
     /**
      * Constructs an optimization request over one or more indices.
@@ -67,8 +61,6 @@ public class OptimizeRequest extends BroadcastOperationRequest<OptimizeRequest> 
      */
     public OptimizeRequest(String... indices) {
         super(indices);
-        // we want to do the optimize in parallel on local shards...
-        operationThreading(BroadcastOperationThreading.THREAD_PER_SHARD);
     }
 
     public OptimizeRequest() {
@@ -139,28 +131,15 @@ public class OptimizeRequest extends BroadcastOperationRequest<OptimizeRequest> 
         return this;
     }
 
-    /**
-     * Should refresh be performed after the optimization. Defaults to <tt>true</tt>.
-     */
-    public boolean refresh() {
-        return refresh;
-    }
-
-    /**
-     * Should refresh be performed after the optimization. Defaults to <tt>true</tt>.
-     */
-    public OptimizeRequest refresh(boolean refresh) {
-        this.refresh = refresh;
-        return this;
-    }
-
     public void readFrom(StreamInput in) throws IOException {
         super.readFrom(in);
         waitForMerge = in.readBoolean();
         maxNumSegments = in.readInt();
         onlyExpungeDeletes = in.readBoolean();
         flush = in.readBoolean();
-        refresh = in.readBoolean();
+        if (in.getVersion().onOrBefore(Version.V_0_90_3)) {
+            in.readBoolean(); // old refresh flag
+        }
     }
 
     public void writeTo(StreamOutput out) throws IOException {
@@ -169,6 +148,8 @@ public class OptimizeRequest extends BroadcastOperationRequest<OptimizeRequest> 
         out.writeInt(maxNumSegments);
         out.writeBoolean(onlyExpungeDeletes);
         out.writeBoolean(flush);
-        out.writeBoolean(refresh);
+        if (out.getVersion().onOrBefore(Version.V_0_90_3)) {
+            out.writeBoolean(false); // old refresh flag
+        }
     }
 }

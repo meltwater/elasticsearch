@@ -25,6 +25,7 @@ import org.elasticsearch.action.count.CountResponse;
 import org.elasticsearch.action.support.IgnoreIndices;
 import org.elasticsearch.action.support.broadcast.BroadcastOperationThreading;
 import org.elasticsearch.client.Client;
+import org.elasticsearch.common.Strings;
 import org.elasticsearch.common.bytes.BytesReference;
 import org.elasticsearch.common.inject.Inject;
 import org.elasticsearch.common.settings.Settings;
@@ -39,9 +40,7 @@ import static org.elasticsearch.action.count.CountRequest.DEFAULT_MIN_SCORE;
 import static org.elasticsearch.rest.RestRequest.Method.GET;
 import static org.elasticsearch.rest.RestRequest.Method.POST;
 import static org.elasticsearch.rest.RestStatus.BAD_REQUEST;
-import static org.elasticsearch.rest.RestStatus.OK;
 import static org.elasticsearch.rest.action.support.RestActions.buildBroadcastShardsHeader;
-import static org.elasticsearch.rest.action.support.RestActions.splitTypes;
 
 /**
  *
@@ -61,13 +60,13 @@ public class RestCountAction extends BaseRestHandler {
 
     @Override
     public void handleRequest(final RestRequest request, final RestChannel channel) {
-        CountRequest countRequest = new CountRequest(RestActions.splitIndices(request.param("index")));
+        CountRequest countRequest = new CountRequest(Strings.splitStringByCommaToArray(request.param("index")));
         if (request.hasParam("ignore_indices")) {
             countRequest.ignoreIndices(IgnoreIndices.fromString(request.param("ignore_indices")));
         }
         countRequest.listenerThreaded(false);
         try {
-            BroadcastOperationThreading operationThreading = BroadcastOperationThreading.fromString(request.param("operation_threading"), BroadcastOperationThreading.SINGLE_THREAD);
+            BroadcastOperationThreading operationThreading = BroadcastOperationThreading.fromString(request.param("operation_threading"), BroadcastOperationThreading.THREAD_PER_SHARD);
             if (operationThreading == BroadcastOperationThreading.NO_THREADS) {
                 // since we don't spawn, don't allow no_threads, but change it to a single thread
                 operationThreading = BroadcastOperationThreading.SINGLE_THREAD;
@@ -88,7 +87,8 @@ public class RestCountAction extends BaseRestHandler {
             }
             countRequest.routing(request.param("routing"));
             countRequest.minScore(request.paramAsFloat("min_score", DEFAULT_MIN_SCORE));
-            countRequest.types(splitTypes(request.param("type")));
+            countRequest.types(Strings.splitStringByCommaToArray(request.param("type")));
+            countRequest.preference(request.param("preference"));
         } catch (Exception e) {
             try {
                 XContentBuilder builder = RestXContentBuilder.restContentBuilder(request);
@@ -105,13 +105,13 @@ public class RestCountAction extends BaseRestHandler {
                 try {
                     XContentBuilder builder = RestXContentBuilder.restContentBuilder(request);
                     builder.startObject();
-                    builder.field("count", response.count());
+                    builder.field("count", response.getCount());
 
                     buildBroadcastShardsHeader(builder, response);
 
                     builder.endObject();
-                    channel.sendResponse(new XContentRestResponse(request, OK, builder));
-                } catch (Exception e) {
+                    channel.sendResponse(new XContentRestResponse(request, response.status(), builder));
+                } catch (Throwable e) {
                     onFailure(e);
                 }
             }

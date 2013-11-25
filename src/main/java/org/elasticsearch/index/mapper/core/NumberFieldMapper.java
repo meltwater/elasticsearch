@@ -19,27 +19,35 @@
 
 package org.elasticsearch.index.mapper.core;
 
+import com.carrotsearch.hppc.DoubleOpenHashSet;
+import com.carrotsearch.hppc.LongOpenHashSet;
 import org.apache.lucene.analysis.NumericTokenStream;
 import org.apache.lucene.document.Field;
 import org.apache.lucene.document.FieldType;
+import org.apache.lucene.document.SortedSetDocValuesField;
 import org.apache.lucene.index.FieldInfo.IndexOptions;
 import org.apache.lucene.search.Filter;
 import org.apache.lucene.search.Query;
+import org.apache.lucene.util.BytesRef;
 import org.apache.lucene.util.NumericUtils;
 import org.elasticsearch.common.Explicit;
 import org.elasticsearch.common.Nullable;
 import org.elasticsearch.common.settings.Settings;
 import org.elasticsearch.common.xcontent.XContentBuilder;
 import org.elasticsearch.index.analysis.NamedAnalyzer;
+import org.elasticsearch.index.codec.docvaluesformat.DocValuesFormatProvider;
 import org.elasticsearch.index.codec.postingsformat.PostingsFormatProvider;
 import org.elasticsearch.index.fielddata.IndexFieldDataService;
+import org.elasticsearch.index.fielddata.IndexNumericFieldData;
 import org.elasticsearch.index.mapper.*;
 import org.elasticsearch.index.mapper.internal.AllFieldMapper;
 import org.elasticsearch.index.query.QueryParseContext;
+import org.elasticsearch.index.search.FieldDataTermsFilter;
 import org.elasticsearch.index.similarity.SimilarityProvider;
 
 import java.io.IOException;
 import java.io.Reader;
+import java.util.List;
 
 /**
  *
@@ -70,26 +78,6 @@ public abstract class NumberFieldMapper<T extends Number> extends AbstractFieldM
 
         public Builder(String name, FieldType fieldType) {
             super(name, fieldType);
-        }
-
-        @Override
-        public T store(boolean store) {
-            return super.store(store);
-        }
-
-        @Override
-        public T boost(float boost) {
-            return super.boost(boost);
-        }
-
-        @Override
-        public T indexName(String indexName) {
-            return super.indexName(indexName);
-        }
-
-        @Override
-        public T includeInAll(Boolean includeInAll) {
-            return super.includeInAll(includeInAll);
         }
 
         public T precisionStep(int precisionStep) {
@@ -126,12 +114,34 @@ public abstract class NumberFieldMapper<T extends Number> extends AbstractFieldM
         }
     };
 
+    private static ThreadLocal<NumericTokenStream> tokenStream4 = new ThreadLocal<NumericTokenStream>() {
+        @Override
+        protected NumericTokenStream initialValue() {
+            return new NumericTokenStream(4);
+        }
+    };
+
+    private static ThreadLocal<NumericTokenStream> tokenStream8 = new ThreadLocal<NumericTokenStream>() {
+        @Override
+        protected NumericTokenStream initialValue() {
+            return new NumericTokenStream(8);
+        }
+    };
+
+    private static ThreadLocal<NumericTokenStream> tokenStreamMax = new ThreadLocal<NumericTokenStream>() {
+        @Override
+        protected NumericTokenStream initialValue() {
+            return new NumericTokenStream(Integer.MAX_VALUE);
+        }
+    };
+
     protected NumberFieldMapper(Names names, int precisionStep, float boost, FieldType fieldType,
                                 Explicit<Boolean> ignoreMalformed, NamedAnalyzer indexAnalyzer,
-                                NamedAnalyzer searchAnalyzer, PostingsFormatProvider provider, SimilarityProvider similarity,
-                                @Nullable Settings fieldDataSettings) {
+                                NamedAnalyzer searchAnalyzer, PostingsFormatProvider postingsProvider,
+                                DocValuesFormatProvider docValuesProvider, SimilarityProvider similarity,
+                                @Nullable Settings fieldDataSettings, Settings indexSettings) {
         // LUCENE 4 UPGRADE: Since we can't do anything before the super call, we have to push the boost check down to subclasses
-        super(names, boost, fieldType, indexAnalyzer, searchAnalyzer, provider, similarity, fieldDataSettings);
+        super(names, boost, fieldType, indexAnalyzer, searchAnalyzer, postingsProvider, docValuesProvider, similarity, fieldDataSettings, indexSettings);
         if (precisionStep <= 0 || precisionStep >= maxPrecisionStep()) {
             this.precisionStep = Integer.MAX_VALUE;
         } else {
@@ -161,24 +171,54 @@ public abstract class NumberFieldMapper<T extends Number> extends AbstractFieldM
     }
 
     @Override
-    protected Field parseCreateField(ParseContext context) throws IOException {
-        RuntimeException e;
+    protected void parseCreateField(ParseContext context, List<Field> fields) throws IOException {
+        RuntimeException e = null;
         try {
-            return innerParseCreateField(context);
+            innerParseCreateField(context, fields);
         } catch (IllegalArgumentException e1) {
             e = e1;
         } catch (MapperParsingException e2) {
             e = e2;
         }
 
-        if (ignoreMalformed.value()) {
-            return null;
-        } else {
+        if (e != null && !ignoreMalformed.value()) {
             throw e;
         }
     }
 
-    protected abstract Field innerParseCreateField(ParseContext context) throws IOException;
+    /**
+     * Utility method to convert a long to a doc values field using {@link NumericUtils} encoding.
+     */
+    protected final Field toDocValues(long l) {
+        final BytesRef bytes = new BytesRef();
+        NumericUtils.longToPrefixCoded(l, 0, bytes);
+        return new SortedSetDocValuesField(names().indexName(), bytes);
+    }
+
+    /**
+     * Utility method to convert an int to a doc values field using {@link NumericUtils} encoding.
+     */
+    protected final Field toDocValues(int i) {
+        final BytesRef bytes = new BytesRef();
+        NumericUtils.intToPrefixCoded(i, 0, bytes);
+        return new SortedSetDocValuesField(names().indexName(), bytes);
+    }
+
+    /**
+     * Utility method to convert a float to a doc values field using {@link NumericUtils} encoding.
+     */
+    protected final Field toDocValues(float f) {
+        return toDocValues(NumericUtils.floatToSortableInt(f));
+    }
+
+    /**
+     * Utility method to convert a double to a doc values field using {@link NumericUtils} encoding.
+     */
+    protected final Field toDocValues(double d) {
+        return toDocValues(NumericUtils.doubleToSortableLong(d));
+    }
+
+    protected abstract void innerParseCreateField(ParseContext context, List<Field> fields) throws IOException;
 
     /**
      * Use the field query created here when matching on numbers.
@@ -221,6 +261,63 @@ public abstract class NumberFieldMapper<T extends Number> extends AbstractFieldM
     public abstract Filter rangeFilter(IndexFieldDataService fieldData, Object lowerTerm, Object upperTerm, boolean includeLower, boolean includeUpper, @Nullable QueryParseContext context);
 
     /**
+     * A terms filter based on the field data cache for numeric fields.
+     */
+    @Override
+    public Filter termsFilter(IndexFieldDataService fieldDataService, List values, @Nullable QueryParseContext context) {
+        IndexNumericFieldData fieldData = fieldDataService.getForField(this);
+        if (fieldData.getNumericType().isFloatingPoint()) {
+            // create with initial size large enough to avoid rehashing
+            DoubleOpenHashSet terms =
+                    new DoubleOpenHashSet((int) (values.size() * (1 + DoubleOpenHashSet.DEFAULT_LOAD_FACTOR)));
+            for (int i = 0, len = values.size(); i < len; i++) {
+                terms.add(parseDoubleValue(values.get(i)));
+            }
+
+            return FieldDataTermsFilter.newDoubles(fieldData, terms);
+        } else {
+            // create with initial size large enough to avoid rehashing
+            LongOpenHashSet terms =
+                    new LongOpenHashSet((int) (values.size() * (1 + LongOpenHashSet.DEFAULT_LOAD_FACTOR)));
+            for (int i = 0, len = values.size(); i < len; i++) {
+                terms.add(parseLongValue(values.get(i)));
+            }
+
+            return FieldDataTermsFilter.newLongs(fieldData, terms);
+        }
+    }
+
+    /**
+     * Converts an object value into a double
+     */
+    public double parseDoubleValue(Object value) {
+        if (value instanceof Number) {
+            return ((Number) value).doubleValue();
+        }
+
+        if (value instanceof BytesRef) {
+            return Double.parseDouble(((BytesRef) value).utf8ToString());
+        }
+
+        return Double.parseDouble(value.toString());
+    }
+
+    /**
+     * Converts an object value into a long
+     */
+    public long parseLongValue(Object value) {
+        if (value instanceof Number) {
+            return ((Number) value).longValue();
+        }
+
+        if (value instanceof BytesRef) {
+            return Long.parseLong(((BytesRef) value).utf8ToString());
+        }
+
+        return Long.parseLong(value.toString());
+    }
+
+    /**
      * Override the default behavior (to return the string, and return the actual Number instance).
      *
      * @param value
@@ -248,10 +345,18 @@ public abstract class NumberFieldMapper<T extends Number> extends AbstractFieldM
 
     @Override
     public void close() {
-        tokenStream.remove();
     }
 
     protected NumericTokenStream popCachedStream() {
+        if (precisionStep == 4) {
+            return tokenStream4.get();
+        }
+        if (precisionStep == 8) {
+            return tokenStream8.get();
+        }
+        if (precisionStep == Integer.MAX_VALUE) {
+            return tokenStreamMax.get();
+        }
         return tokenStream.get();
     }
 
@@ -282,10 +387,16 @@ public abstract class NumberFieldMapper<T extends Number> extends AbstractFieldM
     }
 
     @Override
-    protected void doXContentBody(XContentBuilder builder) throws IOException {
-        super.doXContentBody(builder);
-        if (ignoreMalformed.explicit()) {
+    protected void doXContentBody(XContentBuilder builder, boolean includeDefaults, Params params) throws IOException {
+        super.doXContentBody(builder, includeDefaults, params);
+
+        if (includeDefaults || ignoreMalformed.explicit()) {
             builder.field("ignore_malformed", ignoreMalformed.value());
         }
+    }
+
+    @Override
+    public boolean isNumeric() {
+        return true;
     }
 }

@@ -23,6 +23,7 @@ import org.apache.lucene.search.BooleanClause;
 import org.apache.lucene.search.BooleanQuery;
 import org.apache.lucene.search.DisjunctionMaxQuery;
 import org.apache.lucene.search.Query;
+import org.elasticsearch.common.lucene.search.Queries;
 import org.elasticsearch.index.query.QueryParseContext;
 
 import java.io.IOException;
@@ -44,29 +45,31 @@ public class MultiMatchQuery extends MatchQuery {
     public MultiMatchQuery(QueryParseContext parseContext) {
         super(parseContext);
     }
+    
+    private Query parseAndApply(Type type, String fieldName, Object value, String minimumShouldMatch, Float boostValue) throws IOException {
+        Query query = parse(type, fieldName, value);
+        if (query instanceof BooleanQuery) {
+            Queries.applyMinimumShouldMatch((BooleanQuery) query, minimumShouldMatch);
+        }
+        if (boostValue != null && query != null) {
+            query.setBoost(boostValue);
+        }
+        return query;
+    }
 
-    public Query parse(Type type, Map<String, Float> fieldNames, Object value) throws IOException {
+    public Query parse(Type type, Map<String, Float> fieldNames, Object value, String minimumShouldMatch) throws IOException {
         if (fieldNames.size() == 1) {
             Map.Entry<String, Float> fieldBoost = fieldNames.entrySet().iterator().next();
             Float boostValue = fieldBoost.getValue();
-            if (boostValue == null) {
-                return parse(type, fieldBoost.getKey(), value);
-            } else {
-                Query query = parse(type, fieldBoost.getKey(), value);
-                query.setBoost(boostValue);
-                return query;
-            }
+            return parseAndApply(type, fieldBoost.getKey(), value, minimumShouldMatch, boostValue);
         }
 
         if (useDisMax) {
             DisjunctionMaxQuery disMaxQuery = new DisjunctionMaxQuery(tieBreaker);
             boolean clauseAdded = false;
             for (String fieldName : fieldNames.keySet()) {
-                Query query = parse(type, fieldName, value);
                 Float boostValue = fieldNames.get(fieldName);
-                if (boostValue != null) {
-                    query.setBoost(boostValue);
-                }
+                Query query = parseAndApply(type, fieldName, value, minimumShouldMatch, boostValue);
                 if (query != null) {
                     clauseAdded = true;
                     disMaxQuery.add(query);
@@ -76,11 +79,8 @@ public class MultiMatchQuery extends MatchQuery {
         } else {
             BooleanQuery booleanQuery = new BooleanQuery();
             for (String fieldName : fieldNames.keySet()) {
-                Query query = parse(type, fieldName, value);
                 Float boostValue = fieldNames.get(fieldName);
-                if (boostValue != null) {
-                    query.setBoost(boostValue);
-                }
+                Query query = parseAndApply(type, fieldName, value, minimumShouldMatch, boostValue);
                 if (query != null) {
                     booleanQuery.add(query, BooleanClause.Occur.SHOULD);
                 }

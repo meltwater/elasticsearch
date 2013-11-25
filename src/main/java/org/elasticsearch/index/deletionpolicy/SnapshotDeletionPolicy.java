@@ -41,11 +41,11 @@ import java.util.concurrent.ConcurrentMap;
  *
  *
  */
-public class SnapshotDeletionPolicy extends AbstractIndexShardComponent implements IndexDeletionPolicy {
+public class SnapshotDeletionPolicy extends AbstractESDeletionPolicy {
 
     private final IndexDeletionPolicy primary;
 
-    private ConcurrentMap<Long, SnapshotHolder> snapshots = ConcurrentCollections.newConcurrentMap();
+    private final ConcurrentMap<Long, SnapshotHolder> snapshots = ConcurrentCollections.newConcurrentMap();
 
     private volatile List<SnapshotIndexCommit> commits;
 
@@ -66,7 +66,10 @@ public class SnapshotDeletionPolicy extends AbstractIndexShardComponent implemen
      * Called by Lucene. Same as {@link #onCommit(java.util.List)}.
      */
     public void onInit(List<? extends IndexCommit> commits) throws IOException {
-        onCommit(commits);
+        if (!commits.isEmpty()) { // this might be empty if we create a new index. 
+            // the behavior has changed in Lucene 4.4 that calls onInit even with an empty commits list.
+            onCommit(commits);
+        }
     }
 
     /**
@@ -74,6 +77,7 @@ public class SnapshotDeletionPolicy extends AbstractIndexShardComponent implemen
      * and delegates to the wrapped deletion policy.
      */
     public void onCommit(List<? extends IndexCommit> commits) throws IOException {
+        assert !commits.isEmpty() : "Commits must not be empty";
         synchronized (mutex) {
             List<SnapshotIndexCommit> snapshotCommits = wrapCommits(commits);
             primary.onCommit(snapshotCommits);
@@ -94,7 +98,8 @@ public class SnapshotDeletionPolicy extends AbstractIndexShardComponent implemen
             }
             this.commits = newCommits;
             // the last commit that is not deleted
-            this.lastCommit = newCommits.get(newCommits.size() - 1);
+            this.lastCommit = newCommits.get(newCommits.size() - 1);     
+           
         }
     }
 
@@ -126,6 +131,13 @@ public class SnapshotDeletionPolicy extends AbstractIndexShardComponent implemen
             }
             return snapshot(lastCommit);
         }
+    }
+
+    @Override
+    public IndexDeletionPolicy clone() {
+       // Lucene IW makes a clone internally but since we hold on to this instance 
+       // the clone will just be the identity. See RobinEngine recovery why we need this.
+       return this;
     }
 
     /**

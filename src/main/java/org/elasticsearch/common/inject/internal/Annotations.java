@@ -16,6 +16,7 @@
 
 package org.elasticsearch.common.inject.internal;
 
+import org.elasticsearch.common.Classes;
 import org.elasticsearch.common.inject.BindingAnnotation;
 import org.elasticsearch.common.inject.Key;
 import org.elasticsearch.common.inject.ScopeAnnotation;
@@ -56,7 +57,7 @@ public class Annotations {
         Class<? extends Annotation> found = null;
 
         for (Annotation annotation : annotations) {
-            if (annotation.annotationType().isAnnotationPresent(ScopeAnnotation.class)) {
+            if (annotation.annotationType().getAnnotation(ScopeAnnotation.class) != null) {
                 if (found != null) {
                     errors.duplicateScopeAnnotations(found, annotation.annotationType());
                 } else {
@@ -69,7 +70,7 @@ public class Annotations {
     }
 
     public static boolean isScopeAnnotation(Class<? extends Annotation> annotationType) {
-        return annotationType.isAnnotationPresent(ScopeAnnotation.class);
+        return annotationType.getAnnotation(ScopeAnnotation.class) != null;
     }
 
     /**
@@ -107,7 +108,7 @@ public class Annotations {
         Annotation found = null;
 
         for (Annotation annotation : annotations) {
-            if (annotation.annotationType().isAnnotationPresent(BindingAnnotation.class)) {
+            if (annotation.annotationType().getAnnotation(BindingAnnotation.class) != null) {
                 if (found != null) {
                     errors.duplicateBindingAnnotations(member,
                             found.annotationType(), annotation.annotationType());

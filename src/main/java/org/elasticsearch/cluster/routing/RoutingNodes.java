@@ -19,12 +19,16 @@
 
 package org.elasticsearch.cluster.routing;
 
-import gnu.trove.map.hash.TObjectIntHashMap;
+import com.carrotsearch.hppc.ObjectIntOpenHashMap;
+import com.google.common.base.Predicate;
+import com.google.common.collect.ImmutableSet;
+import com.google.common.collect.Sets;
 import org.elasticsearch.cluster.ClusterState;
 import org.elasticsearch.cluster.block.ClusterBlocks;
 import org.elasticsearch.cluster.metadata.IndexMetaData;
 import org.elasticsearch.cluster.metadata.MetaData;
 import org.elasticsearch.cluster.node.DiscoveryNode;
+import org.elasticsearch.index.shard.ShardId;
 
 import java.util.*;
 
@@ -49,7 +53,9 @@ public class RoutingNodes implements Iterable<RoutingNode> {
 
     private final List<MutableShardRouting> ignoredUnassigned = newArrayList();
 
-    private final Map<String, TObjectIntHashMap<String>> nodesPerAttributeNames = new HashMap<String, TObjectIntHashMap<String>>();
+    private Set<ShardId> clearPostAllocationFlag;
+
+    private final Map<String, ObjectIntOpenHashMap<String>> nodesPerAttributeNames = new HashMap<String, ObjectIntOpenHashMap<String>>();
 
     public RoutingNodes(ClusterState clusterState) {
         this.metaData = clusterState.metaData();
@@ -159,19 +165,38 @@ public class RoutingNodes implements Iterable<RoutingNode> {
         return nodesToShards();
     }
 
+    /**
+     * Clears the post allocation flag for the provided shard id. NOTE: this should be used cautiously
+     * since it will lead to data loss of the primary shard is not allocated, as it will allocate
+     * the primary shard on a node and *not* expect it to have an existing valid index there.
+     */
+    public void addClearPostAllocationFlag(ShardId shardId) {
+        if (clearPostAllocationFlag == null) {
+            clearPostAllocationFlag = Sets.newHashSet();
+        }
+        clearPostAllocationFlag.add(shardId);
+    }
+
+    public Iterable<ShardId> getShardsToClearPostAllocationFlag() {
+        if (clearPostAllocationFlag == null) {
+            return ImmutableSet.of();
+        }
+        return clearPostAllocationFlag;
+    }
+
     public RoutingNode node(String nodeId) {
         return nodesToShards.get(nodeId);
     }
 
-    public TObjectIntHashMap<String> nodesPerAttributesCounts(String attributeName) {
-        TObjectIntHashMap<String> nodesPerAttributesCounts = nodesPerAttributeNames.get(attributeName);
+    public ObjectIntOpenHashMap<String> nodesPerAttributesCounts(String attributeName) {
+        ObjectIntOpenHashMap<String> nodesPerAttributesCounts = nodesPerAttributeNames.get(attributeName);
         if (nodesPerAttributesCounts != null) {
             return nodesPerAttributesCounts;
         }
-        nodesPerAttributesCounts = new TObjectIntHashMap<String>();
+        nodesPerAttributesCounts = new ObjectIntOpenHashMap<String>();
         for (RoutingNode routingNode : this) {
             String attrValue = routingNode.node().attributes().get(attributeName);
-            nodesPerAttributesCounts.adjustOrPutValue(attrValue, 1, 1);
+            nodesPerAttributesCounts.addTo(attrValue, 1);
         }
         nodesPerAttributeNames.put(attributeName, nodesPerAttributesCounts);
         return nodesPerAttributesCounts;
@@ -221,6 +246,20 @@ public class RoutingNodes implements Iterable<RoutingNode> {
             count += routingNode.numberOfShardsWithState(state);
         }
         return count;
+    }
+
+    public List<MutableShardRouting> shards(Predicate<MutableShardRouting> predicate) {
+        List<MutableShardRouting> shards = newArrayList();
+        for (RoutingNode routingNode : this) {
+            List<MutableShardRouting> nodeShards = routingNode.shards();
+            for (int i = 0; i < nodeShards.size(); i++) {
+                MutableShardRouting shardRouting = nodeShards.get(i);
+                if (predicate.apply(shardRouting)) {
+                    shards.add(shardRouting);
+                }
+            }
+        }
+        return shards;
     }
 
     public List<MutableShardRouting> shardsWithState(ShardRoutingState... state) {

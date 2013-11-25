@@ -27,7 +27,9 @@ import org.elasticsearch.common.lucene.search.XConstantScoreQuery;
 import org.elasticsearch.common.lucene.search.XFilteredQuery;
 import org.elasticsearch.common.xcontent.XContentParser;
 import org.elasticsearch.index.mapper.DocumentMapper;
-import org.elasticsearch.index.search.child.HasChildFilter;
+import org.elasticsearch.index.search.child.ChildrenConstantScoreQuery;
+import org.elasticsearch.index.search.child.CustomQueryWrappingFilter;
+import org.elasticsearch.index.search.child.DeleteByQueryWrappingFilter;
 import org.elasticsearch.search.internal.SearchContext;
 
 import java.io.IOException;
@@ -55,8 +57,8 @@ public class HasChildFilterParser implements FilterParser {
         Query query = null;
         boolean queryFound = false;
         String childType = null;
+        int shortCircuitParentDocSet = 8192; // Tests show a cut of point between 8192 and 16384.
 
-        String executionType = "uid";
         String filterName = null;
         String currentFieldName = null;
         XContentParser.Token token;
@@ -94,28 +96,32 @@ public class HasChildFilterParser implements FilterParser {
                     throw new QueryParsingException(parseContext.index(), "the [_scope] support in [has_child] filter has been removed, use a filter as a facet_filter in the relevant global facet");
                 } else if ("_name".equals(currentFieldName)) {
                     filterName = parser.text();
-                } else if ("execution_type".equals(currentFieldName) || "executionType".equals(currentFieldName)) {// This option is experimental and will most likely be removed.
-                    executionType = parser.text();
+                } else if ("_cache".equals(currentFieldName)) {
+                    // noop to be backwards compatible
+                } else if ("_cache_key".equals(currentFieldName) || "_cacheKey".equals(currentFieldName)) {
+                    // noop to be backwards compatible
+                } else if ("short_circuit_cutoff".equals(currentFieldName)) {
+                    shortCircuitParentDocSet = parser.intValue();
                 } else {
                     throw new QueryParsingException(parseContext.index(), "[has_child] filter does not support [" + currentFieldName + "]");
                 }
             }
         }
         if (!queryFound) {
-            throw new QueryParsingException(parseContext.index(), "[child] filter requires 'query' field");
+            throw new QueryParsingException(parseContext.index(), "[has_child] filter requires 'query' field");
         }
         if (query == null) {
             return null;
         }
         if (childType == null) {
-            throw new QueryParsingException(parseContext.index(), "[child] filter requires 'type' field");
+            throw new QueryParsingException(parseContext.index(), "[has_child] filter requires 'type' field");
         }
 
         DocumentMapper childDocMapper = parseContext.mapperService().documentMapper(childType);
         if (childDocMapper == null) {
             throw new QueryParsingException(parseContext.index(), "No mapping for for type [" + childType + "]");
         }
-        if (childDocMapper.parentFieldMapper() == null) {
+        if (!childDocMapper.parentFieldMapper().active()) {
             throw new QueryParsingException(parseContext.index(), "Type [" + childType + "] does not have parent mapping");
         }
         String parentType = childDocMapper.parentFieldMapper().type();
@@ -123,14 +129,23 @@ public class HasChildFilterParser implements FilterParser {
         // wrap the query with type query
         query = new XFilteredQuery(query, parseContext.cacheFilter(childDocMapper.typeFilter(), null));
 
-        SearchContext searchContext = SearchContext.current();
+        DocumentMapper parentDocMapper = parseContext.mapperService().documentMapper(parentType);
+        if (parentDocMapper == null) {
+            throw new QueryParsingException(parseContext.index(), "[has_child]  Type [" + childType + "] points to a non existent parent type [" + parentType + "]");
+        }
 
-        HasChildFilter childFilter = HasChildFilter.create(query, parentType, childType, searchContext, executionType);
-        searchContext.addRewrite(childFilter);
+        Filter parentFilter = parseContext.cacheFilter(parentDocMapper.typeFilter(), null);
+        Query childrenConstantScoreQuery = new ChildrenConstantScoreQuery(query, parentType, childType, parentFilter, shortCircuitParentDocSet, false);
 
         if (filterName != null) {
-            parseContext.addNamedFilter(filterName, childFilter);
+            parseContext.addNamedQuery(filterName, childrenConstantScoreQuery);
         }
-        return childFilter;
+
+        boolean deleteByQuery = "delete_by_query".equals(SearchContext.current().source());
+        if (deleteByQuery) {
+            return new DeleteByQueryWrappingFilter(childrenConstantScoreQuery);
+        } else {
+            return new CustomQueryWrappingFilter(childrenConstantScoreQuery);
+        }
     }
 }

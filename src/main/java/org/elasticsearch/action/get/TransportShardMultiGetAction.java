@@ -21,6 +21,7 @@ package org.elasticsearch.action.get;
 
 import org.elasticsearch.ElasticSearchException;
 import org.elasticsearch.ExceptionsHelper;
+import org.elasticsearch.action.support.TransportActions;
 import org.elasticsearch.action.support.single.shard.TransportShardSingleOperationAction;
 import org.elasticsearch.cluster.ClusterService;
 import org.elasticsearch.cluster.ClusterState;
@@ -29,11 +30,13 @@ import org.elasticsearch.cluster.block.ClusterBlockLevel;
 import org.elasticsearch.cluster.routing.ShardIterator;
 import org.elasticsearch.common.inject.Inject;
 import org.elasticsearch.common.settings.Settings;
+import org.elasticsearch.index.VersionType;
 import org.elasticsearch.index.engine.Engine;
 import org.elasticsearch.index.get.GetResult;
 import org.elasticsearch.index.service.IndexService;
 import org.elasticsearch.index.shard.service.IndexShard;
 import org.elasticsearch.indices.IndicesService;
+import org.elasticsearch.search.fetch.source.FetchSourceContext;
 import org.elasticsearch.threadpool.ThreadPool;
 import org.elasticsearch.transport.TransportService;
 
@@ -103,7 +106,7 @@ public class TransportShardMultiGetAction extends TransportShardSingleOperationA
         IndexShard indexShard = indexService.shardSafe(shardId);
 
         if (request.refresh() && !request.realtime()) {
-            indexShard.refresh(new Engine.Refresh(false));
+            indexShard.refresh(new Engine.Refresh("refresh_flag_mget").force(TransportGetAction.REFRESH_FORCE));
         }
 
         MultiGetShardResponse response = new MultiGetShardResponse();
@@ -112,12 +115,23 @@ public class TransportShardMultiGetAction extends TransportShardSingleOperationA
             String id = request.ids.get(i);
             String[] fields = request.fields.get(i);
 
+            long version = request.versions.get(i);
+            VersionType versionType = request.versionTypes.get(i);
+            if (versionType == null) {
+                versionType = VersionType.INTERNAL;
+            }
+
+            FetchSourceContext fetchSourceContext = request.fetchSourceContexts.get(i);
             try {
-                GetResult getResult = indexShard.getService().get(type, id, fields, request.realtime());
+                GetResult getResult = indexShard.getService().get(type, id, fields, request.realtime(), version, versionType, fetchSourceContext);
                 response.add(request.locations.get(i), new GetResponse(getResult));
-            } catch (Exception e) {
-                logger.debug("[{}][{}] failed to execute multi_get for [{}]/[{}]", e, request.index(), shardId, type, id);
-                response.add(request.locations.get(i), new MultiGetResponse.Failure(request.index(), type, id, ExceptionsHelper.detailedMessage(e)));
+            } catch (Throwable t) {
+                if (TransportActions.isShardNotAvailableException(t)) {
+                    throw (ElasticSearchException) t;
+                } else {
+                    logger.debug("[{}][{}] failed to execute multi_get for [{}]/[{}]", t, request.index(), shardId, type, id);
+                    response.add(request.locations.get(i), new MultiGetResponse.Failure(request.index(), type, id, ExceptionsHelper.detailedMessage(t)));
+                }
             }
         }
 

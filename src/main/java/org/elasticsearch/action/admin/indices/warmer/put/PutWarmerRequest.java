@@ -19,11 +19,11 @@
 
 package org.elasticsearch.action.admin.indices.warmer.put;
 
+import org.elasticsearch.Version;
 import org.elasticsearch.action.ActionRequestValidationException;
 import org.elasticsearch.action.search.SearchRequest;
 import org.elasticsearch.action.search.SearchRequestBuilder;
-import org.elasticsearch.action.support.master.MasterNodeOperationRequest;
-import org.elasticsearch.common.Nullable;
+import org.elasticsearch.action.support.master.AcknowledgedRequest;
 import org.elasticsearch.common.io.stream.StreamInput;
 import org.elasticsearch.common.io.stream.StreamOutput;
 
@@ -34,14 +34,13 @@ import static org.elasticsearch.action.ValidateActions.addValidationError;
 /**
  * A request to put a search warmer.
  */
-public class PutWarmerRequest extends MasterNodeOperationRequest<PutWarmerRequest> {
+public class PutWarmerRequest extends AcknowledgedRequest<PutWarmerRequest> {
 
     private String name;
 
     private SearchRequest searchRequest;
 
     PutWarmerRequest() {
-
     }
 
     /**
@@ -81,14 +80,18 @@ public class PutWarmerRequest extends MasterNodeOperationRequest<PutWarmerReques
         return this;
     }
 
-    @Nullable
     SearchRequest searchRequest() {
         return this.searchRequest;
     }
 
     @Override
     public ActionRequestValidationException validate() {
-        ActionRequestValidationException validationException = searchRequest.validate();
+        ActionRequestValidationException validationException = null;
+        if (searchRequest == null) {
+            validationException = addValidationError("search request is missing", validationException);
+        } else {
+            validationException = searchRequest.validate();
+        }
         if (name == null) {
             validationException = addValidationError("name is missing", validationException);
         }
@@ -103,6 +106,7 @@ public class PutWarmerRequest extends MasterNodeOperationRequest<PutWarmerReques
             searchRequest = new SearchRequest();
             searchRequest.readFrom(in);
         }
+        readTimeout(in, Version.V_0_90_6);
     }
 
     @Override
@@ -115,5 +119,6 @@ public class PutWarmerRequest extends MasterNodeOperationRequest<PutWarmerReques
             out.writeBoolean(true);
             searchRequest.writeTo(out);
         }
+        writeTimeout(out, Version.V_0_90_6);
     }
 }

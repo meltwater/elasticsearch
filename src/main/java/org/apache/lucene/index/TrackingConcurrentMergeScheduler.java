@@ -24,8 +24,12 @@ import org.elasticsearch.common.metrics.CounterMetric;
 import org.elasticsearch.common.metrics.MeanMetric;
 import org.elasticsearch.common.unit.ByteSizeValue;
 import org.elasticsearch.common.unit.TimeValue;
+import org.elasticsearch.common.util.concurrent.ConcurrentCollections;
+import org.elasticsearch.index.merge.OnGoingMerge;
 
 import java.io.IOException;
+import java.util.Collections;
+import java.util.Set;
 
 /**
  * An extension to the {@link ConcurrentMergeScheduler} that provides tracking on merge times, total
@@ -41,6 +45,9 @@ public class TrackingConcurrentMergeScheduler extends ConcurrentMergeScheduler {
     private final CounterMetric currentMerges = new CounterMetric();
     private final CounterMetric currentMergesNumDocs = new CounterMetric();
     private final CounterMetric currentMergesSizeInBytes = new CounterMetric();
+
+    private final Set<OnGoingMerge> onGoingMerges = ConcurrentCollections.newConcurrentSet();
+    private final Set<OnGoingMerge> readOnlyOnGoingMerges = Collections.unmodifiableSet(onGoingMerges);
 
     public TrackingConcurrentMergeScheduler(ESLogger logger) {
         super();
@@ -75,21 +82,34 @@ public class TrackingConcurrentMergeScheduler extends ConcurrentMergeScheduler {
         return currentMergesSizeInBytes.count();
     }
 
+    public Set<OnGoingMerge> onGoingMerges() {
+        return readOnlyOnGoingMerges;
+    }
+
     @Override
     protected void doMerge(MergePolicy.OneMerge merge) throws IOException {
         int totalNumDocs = merge.totalNumDocs();
-        long totalSizeInBytes = merge.totalBytesSize();
+        // don't used #totalBytesSize() since need to be executed under IW lock, might be fixed in future Lucene version
+        long totalSizeInBytes = merge.estimatedMergeBytes;
         long time = System.currentTimeMillis();
         currentMerges.inc();
         currentMergesNumDocs.inc(totalNumDocs);
         currentMergesSizeInBytes.inc(totalSizeInBytes);
+
+        OnGoingMerge onGoingMerge = new OnGoingMerge(merge);
+        onGoingMerges.add(onGoingMerge);
+
         if (logger.isTraceEnabled()) {
             logger.trace("merge [{}] starting..., merging [{}] segments, [{}] docs, [{}] size, into [{}] estimated_size", merge.info == null ? "_na_" : merge.info.info.name, merge.segments.size(), totalNumDocs, new ByteSizeValue(totalSizeInBytes), new ByteSizeValue(merge.estimatedMergeBytes));
         }
         try {
+            beforeMerge(onGoingMerge);
             super.doMerge(merge);
         } finally {
             long took = System.currentTimeMillis() - time;
+
+            onGoingMerges.remove(onGoingMerge);
+            afterMerge(onGoingMerge);
 
             currentMerges.dec();
             currentMergesNumDocs.dec(totalNumDocs);
@@ -104,5 +124,26 @@ public class TrackingConcurrentMergeScheduler extends ConcurrentMergeScheduler {
                 logger.trace("merge [{}] done, took [{}]", merge.info == null ? "_na_" : merge.info.info.name, TimeValue.timeValueMillis(took));
             }
         }
+    }
+
+    /**
+     * A callback allowing for custom logic before an actual merge starts.
+     */
+    protected void beforeMerge(OnGoingMerge merge) {
+
+    }
+
+    /**
+     * A callback allowing for custom logic before an actual merge starts.
+     */
+    protected void afterMerge(OnGoingMerge merge) {
+
+    }
+
+    @Override
+    public MergeScheduler clone() {
+        // Lucene IW makes a clone internally but since we hold on to this instance 
+        // the clone will just be the identity.
+        return this;
     }
 }

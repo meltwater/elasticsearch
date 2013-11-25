@@ -21,7 +21,7 @@ package org.elasticsearch.rest;
 
 import org.apache.lucene.util.BytesRef;
 import org.apache.lucene.util.UnicodeUtil;
-import org.elasticsearch.common.util.concurrent.ThreadLocals;
+import org.elasticsearch.ElasticSearchIllegalArgumentException;
 import org.elasticsearch.common.xcontent.XContentBuilder;
 
 import java.io.IOException;
@@ -40,13 +40,6 @@ public class XContentRestResponse extends AbstractRestResponse {
         System.arraycopy(U_END_JSONP.bytes, U_END_JSONP.offset, END_JSONP, 0, U_END_JSONP.length);
     }
 
-    private static ThreadLocal<ThreadLocals.CleanableValue<BytesRef>> prefixCache = new ThreadLocal<ThreadLocals.CleanableValue<BytesRef>>() {
-        @Override
-        protected ThreadLocals.CleanableValue<BytesRef> initialValue() {
-            return new ThreadLocals.CleanableValue<BytesRef>(new BytesRef());
-        }
-    };
-
     private final BytesRef prefixUtf8Result;
 
     private final RestStatus status;
@@ -54,6 +47,9 @@ public class XContentRestResponse extends AbstractRestResponse {
     private final XContentBuilder builder;
 
     public XContentRestResponse(RestRequest request, RestStatus status, XContentBuilder builder) throws IOException {
+        if (request == null) {
+            throw new ElasticSearchIllegalArgumentException("request must be set");
+        }
         this.builder = builder;
         this.status = status;
         this.prefixUtf8Result = startJsonp(request);
@@ -70,7 +66,7 @@ public class XContentRestResponse extends AbstractRestResponse {
 
     @Override
     public boolean contentThreadSafe() {
-        return false;
+        return true;
     }
 
     @Override
@@ -143,7 +139,7 @@ public class XContentRestResponse extends AbstractRestResponse {
         if (callback == null) {
             return null;
         }
-        BytesRef result = prefixCache.get().get();
+        final BytesRef result = new BytesRef();
         UnicodeUtil.UTF16toUTF8(callback, 0, callback.length(), result);
         result.bytes[result.length] = '(';
         result.length++;

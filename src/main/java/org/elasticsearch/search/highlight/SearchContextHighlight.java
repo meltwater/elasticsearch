@@ -19,7 +19,10 @@
 
 package org.elasticsearch.search.highlight;
 
+import org.apache.lucene.search.Query;
+
 import java.util.List;
+import java.util.Map;
 
 /**
  *
@@ -37,7 +40,7 @@ public class SearchContextHighlight {
     }
 
     public static class Field {
-
+        // Fields that default to null or -1 are often set to their real default in HighlighterParseElement#parse
         private final String field;
 
         private int fragmentCharSize = -1;
@@ -63,7 +66,14 @@ public class SearchContextHighlight {
         private String fragmenter;
 
         private int boundaryMaxScan = -1;
-        private char[] boundaryChars = null;
+
+        private Character[] boundaryChars = null;
+
+        private Query highlightQuery;
+
+        private int noMatchSize = -1;
+
+        private Map<String, Object> options;
 
         public Field(String field) {
             this.field = field;
@@ -169,12 +179,36 @@ public class SearchContextHighlight {
             this.boundaryMaxScan = boundaryMaxScan;
         }
 
-        public char[] boundaryChars() {
+        public Character[] boundaryChars() {
             return boundaryChars;
         }
 
-        public void boundaryChars(char[] boundaryChars) {
+        public void boundaryChars(Character[] boundaryChars) {
             this.boundaryChars = boundaryChars;
+        }
+
+        public Query highlightQuery() {
+            return highlightQuery;
+        }
+
+        public void highlightQuery(Query highlightQuery) {
+            this.highlightQuery = highlightQuery;
+        }
+
+        public int noMatchSize() {
+            return noMatchSize;
+        }
+
+        public void noMatchSize(int noMatchSize) {
+            this.noMatchSize = noMatchSize;
+        }
+
+        public Map<String, Object> options() {
+            return options;
+        }
+
+        public void options(Map<String, Object> options) {
+            this.options = options;
         }
     }
 }
